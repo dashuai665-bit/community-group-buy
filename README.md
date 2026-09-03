@@ -22,6 +22,15 @@
 - `domain/authorization.ts` 提供 server-side authentication、active user、membership、community admin 與 platform admin 檢查。
 - public serializer 不輸出電話、email 或 identity metadata；logging helper 會遮罩電話並排除 token、OTP 等敏感欄位。
 
+## Phase 3 API 與 persistence
+
+- `server/repositories` 集中所有 prepared statements，route 不直接撰寫 SQL。
+- D1 `batch()` 作為 atomic unit of work；provisioning、join、leave/default reassignment、identity link/unlink 與 audit 同批提交。
+- provider-neutral session boundary 先把外部 identity 解析成 `users.id`，protected API 後續只使用平台 user ID。
+- 公開社區、我的社區、加入、離開、預設社區、identity、phone 與 community-scoped contact APIs 均透過 service layer 執行 invariant。
+- `audit_logs` 僅存最小化 metadata；禁止 raw phone、OTP、OAuth/session token 或 provider secrets。
+- 本機 HTTP 測試使用 dependency-injected auth adapter；production route 不信任 `X-User-Id` 類型的自訂身份 header。
+
 ## 本機開發
 
 需求：Node.js 22.13 以上與 pnpm。

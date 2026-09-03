@@ -85,3 +85,18 @@ export const platformRoles = sqliteTable('platform_roles', {
   primaryKey({ columns: [table.userId, table.role] }),
   check('platform_roles_role_check', sql`${table.role} IN ('platform_admin')`),
 ]);
+
+export const auditLogs = sqliteTable('audit_logs', {
+  id: text('id').primaryKey(),
+  actorUserId: text('actor_user_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  communityId: text('community_id').references(() => communities.id, { onDelete: 'restrict' }),
+  actionType: text('action_type').notNull(),
+  targetType: text('target_type').notNull(),
+  targetId: text('target_id'),
+  metadata: text('metadata', { mode: 'json' }).$type<Record<string, unknown>>(),
+  createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index('audit_logs_actor_created_idx').on(table.actorUserId, table.createdAt),
+  index('audit_logs_community_created_idx').on(table.communityId, table.createdAt),
+  check('audit_logs_action_type_check', sql`${table.actionType} IN ('community_join', 'community_leave', 'default_community_change', 'identity_link', 'identity_unlink', 'admin_member_contact_access')`),
+]);

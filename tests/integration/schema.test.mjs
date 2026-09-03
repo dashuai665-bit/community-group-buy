@@ -3,12 +3,17 @@ import { readFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 
-const migrationUrl = new URL('../../drizzle/0000_melted_otto_octavius.sql', import.meta.url);
+const migrationUrls = [
+  new URL('../../drizzle/0000_melted_otto_octavius.sql', import.meta.url),
+  new URL('../../drizzle/0001_sticky_taskmaster.sql', import.meta.url),
+];
 
 async function createMigratedDatabase() {
   const database = new DatabaseSync(':memory:');
   database.exec('PRAGMA foreign_keys = ON');
-  database.exec(await readFile(migrationUrl, 'utf8'));
+  for (const migrationUrl of migrationUrls) {
+    database.exec(await readFile(migrationUrl, 'utf8'));
+  }
   return database;
 }
 
@@ -27,7 +32,7 @@ test('migration 可以重複建立兩個乾淨 SQLite DB，且 foreign_key_check
     ).all();
     assert.deepEqual(
       tables.map(({ name }) => name),
-      ['communities', 'community_members', 'platform_roles', 'user_identities', 'user_profiles', 'users'],
+      ['audit_logs', 'communities', 'community_members', 'platform_roles', 'user_identities', 'user_profiles', 'users'],
     );
     assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
     database.close();

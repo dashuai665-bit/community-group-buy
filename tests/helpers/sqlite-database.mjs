@@ -1,0 +1,43 @@
+import { readFile } from 'node:fs/promises';
+import { DatabaseSync } from 'node:sqlite';
+
+class SQLiteStatement {
+  values = [];
+  constructor(database, sql) { this.database = database; this.sql = sql; }
+  bind(...values) { const statement = new SQLiteStatement(this.database, this.sql); statement.values = values; return statement; }
+  async first() { return this.database.prepare(this.sql).get(...this.values) ?? null; }
+  async all() { return { success: true, results: this.database.prepare(this.sql).all(...this.values) }; }
+  async run() { return { success: true, meta: this.database.prepare(this.sql).run(...this.values) }; }
+}
+
+export class SQLiteD1Database {
+  constructor(database = new DatabaseSync(':memory:')) {
+    this.database = database;
+    this.database.exec('PRAGMA foreign_keys = ON');
+  }
+  prepare(sql) { return new SQLiteStatement(this.database, sql); }
+  async batch(statements) {
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      const results = [];
+      for (const statement of statements) results.push(await statement.run());
+      this.database.exec('COMMIT');
+      return results;
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
+  }
+  exec(sql) { this.database.exec(sql); }
+  close() { this.database.close(); }
+}
+
+export async function createPhase3Database() {
+  const db = new SQLiteD1Database();
+  for (const file of ['../../drizzle/0000_melted_otto_octavius.sql', '../../drizzle/0001_sticky_taskmaster.sql']) {
+    db.exec(await readFile(new URL(file, import.meta.url), 'utf8'));
+  }
+  return db;
+}
+
+export function seed(db, sql) { db.exec(sql); }
