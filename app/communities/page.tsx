@@ -1,0 +1,1 @@
+import {CommunityList} from '@/components/storefront/community-list';export default function CommunitiesPage(){return <section className="content-section page-top"><p className="eyebrow">選擇你的生活圈</p><h1 className="page-title">瀏覽社區</h1><p className="page-lead">先看看各社區正在湊什麼，登入後即可加入開放社區。</p><CommunityList/></section>}

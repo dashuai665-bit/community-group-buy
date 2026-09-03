@@ -229,6 +229,12 @@ export function createApplication(repositories: Repositories, authentication: Au
         });
         return Response.json({ success: true });
       }
+      if (request.method === 'GET' && path === '/api/me/profile') {
+        const actor=await requireActiveUser(repositories,await appUser(request));
+        const profile=await repositories.profiles.findByUserId(actor.id);
+        if(!profile) throw new ApiError(404,'PROFILE_NOT_FOUND','找不到會員資料');
+        return Response.json({profile:{displayName:profile.display_name,phone:profile.phone,phoneVerified:profile.phone_verified==='true',email:profile.email,defaultCommunityId:profile.default_community_id},isPlatformAdmin:await repositories.platformRoles.isPlatformAdmin(actor.id)});
+      }
       match = path.match(/^\/api\/me\/identities\/([^/]+)\/unlink$/);
       if (request.method === 'POST' && match) {
         await identities.unlinkIdentity(await appUser(request), validateId(match[1], 'identityId'));

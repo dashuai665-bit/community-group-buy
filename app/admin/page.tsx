@@ -1,0 +1,1 @@
+import{AdminLanding}from'@/components/storefront/admin-landing';export default function AdminPage(){return <section className="content-section page-top"><p className="eyebrow">權限限定</p><h1 className="page-title">管理</h1><p className="page-lead">Phase 5 提供基礎入口，完整採購管理將於後續建立。</p><AdminLanding/></section>}

@@ -1,0 +1,1 @@
+import{OrderDetail}from'@/components/storefront/order-detail';export default async function OrderPage({params}:{params:Promise<{id:string}>}){const{id}=await params;return <section className="content-section page-top"><OrderDetail orderId={id}/></section>}

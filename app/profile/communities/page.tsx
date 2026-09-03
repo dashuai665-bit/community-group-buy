@@ -1,0 +1,1 @@
+import{MyCommunities}from'@/components/storefront/my-communities';export default function MyCommunitiesPage(){return <section className="content-section page-top"><p className="eyebrow">生活圈設定</p><h1 className="page-title">我的社區</h1><MyCommunities/></section>}

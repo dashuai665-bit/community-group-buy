@@ -1,0 +1,1 @@
+import{WishesView}from'@/components/storefront/wishes-view';export default function WishesPage(){return <section className="content-section page-top"><p className="eyebrow">想買的，也能一起決定</p><h1 className="page-title">我的願望</h1><WishesView/></section>}

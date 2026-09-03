@@ -1,0 +1,1 @@
+import{OrdersView}from'@/components/storefront/orders-view';export default function OrdersPage(){return <section className="content-section page-top"><p className="eyebrow">每一團都看得見</p><h1 className="page-title">我的訂單</h1><p className="page-lead">查看湊單、成團與取貨進度。</p><OrdersView/></section>}

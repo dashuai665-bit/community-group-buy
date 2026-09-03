@@ -19,6 +19,7 @@
     "test:concurrency": "node --test tests/concurrency/*.test.mjs",
     "test:reconciliation": "node --test tests/reconciliation/*.test.mjs",
     "db:verify": "node --test tests/integration/schema.test.mjs",
+    "db:migrate:local": "wrangler d1 execute DB --local --file drizzle/0000_melted_otto_octavius.sql && wrangler d1 execute DB --local --file drizzle/0001_sticky_taskmaster.sql && wrangler d1 execute DB --local --file drizzle/0002_magical_gamma_corps.sql && wrangler d1 execute DB --local --file drizzle/0003_bumpy_cannonball.sql",
     "format": "oxfmt",
     "db:generate": "drizzle-kit generate"
   },

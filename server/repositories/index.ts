@@ -22,7 +22,7 @@ export interface ProductRow { id: string; name: string; description: string | nu
 export interface OfferingRow { id: string; community_id: string; product_id: string; status: string; price_minor: number; currency: string; batch_threshold: number; min_quantity_per_order: number; max_quantity_per_order: number | null }
 export interface BatchRow { id: string; offering_id: string; sequence_number: number; status: string; threshold_quantity: number; committed_quantity: number }
 export interface WishRow { id: string; user_id: string; community_id: string; product_id: string | null; wish_text: string | null; status: string }
-export interface OrderRow { id: string; user_id: string; community_id: string; status: string; currency: string; estimated_total_minor: number; actual_total_minor: number | null; idempotency_key: string; contact_name_snapshot: string; contact_phone_snapshot: string; cancel_reason: string | null }
+export interface OrderRow { id: string; user_id: string; community_id: string; status: string; currency: string; estimated_total_minor: number; actual_total_minor: number | null; idempotency_key: string; contact_name_snapshot: string; contact_phone_snapshot: string; cancel_reason: string | null; created_at: string }
 export interface OrderItemRow { id: string; order_id: string; offering_id: string; product_id: string; product_name_snapshot: string; unit_label_snapshot: string; unit_price_minor: number; quantity: number; estimated_subtotal_minor: number }
 export interface PickupRow { id: string; order_id: string; community_id: string; status: string; scheduled_at: string | null; ready_at: string | null; picked_up_at: string | null }
 

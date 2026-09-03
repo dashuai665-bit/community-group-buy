@@ -1,0 +1,1 @@
+import{ProfileView}from'@/components/storefront/profile-view';export default function ProfilePage(){return <section className="content-section page-top"><p className="eyebrow">你的鄰里帳戶</p><h1 className="page-title">我的</h1><ProfileView/></section>}

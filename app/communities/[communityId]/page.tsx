@@ -1,0 +1,1 @@
+import {ProductsView}from'@/components/storefront/products-view';export default async function CommunityPage({params}:{params:Promise<{communityId:string}>}){const{communityId}=await params;return <section className="content-section page-top"><ProductsView communityId={communityId}/></section>}

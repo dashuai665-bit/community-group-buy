@@ -1,18 +1,2 @@
-export default function Home() {
-  return (
-    <main className="home-shell">
-      <section className="brand-card" aria-labelledby="brand-title">
-        <div className="brand-mark" aria-hidden="true">
-          鄰
-        </div>
-        <p className="eyebrow">社區共同採購平台</p>
-        <h1 id="brand-title">鄰里湊湊</h1>
-        <p className="tagline">一起湊，更划算</p>
-        <p className="intro">
-          和熟悉的鄰居一起揪團，讓每一次採購都更省心、更有溫度。
-        </p>
-        <span className="status-badge">正式版籌備中</span>
-      </section>
-    </main>
-  );
-}
+import Link from 'next/link';import {ArrowRight,MapPinned,PackageCheck,ShoppingBasket,UsersRound} from 'lucide-react';import {CommunityList} from '@/components/storefront/community-list';import {DefaultCommunityLink} from '@/components/storefront/default-community-link';
+export default function Home(){return <><section className="hero"><div className="hero-copy"><p className="eyebrow">社區共同採購平台</p><h1>鄰里湊湊</h1><p className="tagline">一起湊，更划算</p><p className="hero-intro">從同一個社區出發，和鄰居一起湊到剛剛好的份量。價格透明、進度清楚，到貨就在附近取。</p><div className="hero-actions"><Link className="button-link large" href="/communities">瀏覽社區 <ArrowRight/></Link><DefaultCommunityLink/></div></div><div className="hero-visual" aria-label="四個共同採購步驟"><span><MapPinned/>選社區</span><span><ShoppingBasket/>找商品</span><span><UsersRound/>一起湊單</span><span><PackageCheck/>到貨取貨</span></div></section><section className="content-section"><div className="section-heading"><div><p className="eyebrow">從附近開始</p><h2>目前可瀏覽社區</h2></div><Link href="/communities">查看全部 <ArrowRight/></Link></div><CommunityList compact/></section></>}
