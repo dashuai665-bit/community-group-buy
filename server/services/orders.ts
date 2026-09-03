@@ -20,7 +20,8 @@ export class OrderService {
   private async detail(order: OrderRow, includeContact = false) {
     const items = await this.repositories.orders.listItems(order.id);
     const pickup = await this.repositories.pickups.findByOrderId(order.id);
-    const publicOrder: Record<string, unknown> = { id:order.id,userId:order.user_id,communityId:order.community_id,status:order.status,currency:order.currency,estimatedTotalMinor:order.estimated_total_minor,actualTotalMinor:order.actual_total_minor,createdAt:order.created_at,items,pickup };
+    const community = await this.repositories.communities.findById(order.community_id);
+    const publicOrder: Record<string, unknown> = { id:order.id,userId:order.user_id,communityId:order.community_id,communityName:community?.name ?? null,status:order.status,currency:order.currency,estimatedTotalMinor:order.estimated_total_minor,actualTotalMinor:order.actual_total_minor,createdAt:order.created_at,items,pickup };
     if (includeContact) publicOrder.contact={ name:order.contact_name_snapshot,phone:order.contact_phone_snapshot };
     return publicOrder;
   }

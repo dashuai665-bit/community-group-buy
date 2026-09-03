@@ -91,6 +91,12 @@ export function createApplication(repositories: Repositories, authentication: Au
         const rows = await repositories.communities.listActive();
         return Response.json({ communities: rows.map(({ id, name, slug, status, join_policy: joinPolicy }) => ({ id, name, slug, status, joinPolicy })) });
       }
+      if (request.method === 'GET' && path === '/api/admin/communities') {
+        const result = await admin.listManageableCommunities(await appUser(request));
+        return Response.json({ isPlatformAdmin: result.isPlatformAdmin, communities: result.communities.map((community) => ({
+          id: community.id, name: community.name, slug: community.slug, status: community.status, joinPolicy: community.join_policy,
+        })) });
+      }
       if (request.method === 'GET' && path === '/api/me/communities') {
         const userId = await appUser(request);
         const actor = await requireActiveUser(repositories, userId);
@@ -238,6 +244,12 @@ export function createApplication(repositories: Repositories, authentication: Au
       match = path.match(/^\/api\/me\/identities\/([^/]+)\/unlink$/);
       if (request.method === 'POST' && match) {
         await identities.unlinkIdentity(await appUser(request), validateId(match[1], 'identityId'));
+        return Response.json({ success: true });
+      }
+      if (request.method === 'PUT' && path === '/api/me/profile/display-name') {
+        const body = await readObject(request);
+        const displayName = validateText(body.displayName, 'displayName', 80);
+        await profiles.changeDisplayName(await appUser(request), displayName);
         return Response.json({ success: true });
       }
       if (request.method === 'PUT' && path === '/api/me/profile/phone') {

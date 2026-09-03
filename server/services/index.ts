@@ -146,6 +146,19 @@ export class CommunityPreferenceService {
 export class CommunityAdminService {
   private readonly repositories: Repositories;
   constructor(repositories: Repositories) { this.repositories = repositories; }
+  async listManageableCommunities(actorUserId: string | null) {
+    const actor = await requireActiveUser(this.repositories, actorUserId);
+    if (await this.repositories.platformRoles.isPlatformAdmin(actor.id)) {
+      return { isPlatformAdmin: true, communities: await this.repositories.communities.listAll() };
+    }
+    const memberships = await this.repositories.members.listActiveForUser(actor.id) as Array<Record<string, unknown>>;
+    return {
+      isPlatformAdmin: false,
+      communities: memberships
+        .filter((row) => row.role === 'community_admin')
+        .map((row) => ({ id: row.community_id, name: row.name, slug: row.slug, status: row.community_status, join_policy: row.join_policy })),
+    };
+  }
   async getMemberContact(actorUserId: string | null, communityId: string, targetUserId: string) {
     const actor = await requireActiveUser(this.repositories, actorUserId);
     const platformAdmin = await this.repositories.platformRoles.isPlatformAdmin(actor.id);
@@ -167,6 +180,10 @@ export class CommunityAdminService {
 export class ProfileService {
   private readonly repositories: Repositories;
   constructor(repositories: Repositories) { this.repositories = repositories; }
+  async changeDisplayName(userId: string | null, displayName: string): Promise<void> {
+    const actor = await requireActiveUser(this.repositories, userId);
+    await this.repositories.batch([this.repositories.profiles.changeDisplayNameStatement(actor.id, displayName)]);
+  }
   async changePhone(userId: string | null, phone: string): Promise<void> {
     const actor = await requireActiveUser(this.repositories, userId);
     await this.repositories.batch([this.repositories.profiles.changePhoneStatement(actor.id, phone)]);

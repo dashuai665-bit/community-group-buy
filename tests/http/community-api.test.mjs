@@ -207,3 +207,38 @@ scenario('36 audit metadata 無 raw phone/token/OTP，500 response 無 internal 
   assert.equal(response.status, 500);
   assert.doesNotMatch(JSON.stringify(await response.json()), /SQL|schema|secret|stack/i);
 });
+scenario('37 display name can be completed after provisioning', async ({ handle, repositories }) => {
+  identities.newMember = { provider: 'chatgpt', providerUserId: 'new-member-sub', verified: true };
+  await call(handle, '/api/me/profile', { token: 'newMember' });
+  const identity = await repositories.identities.find('chatgpt', 'new-member-sub');
+  assert.equal((await repositories.profiles.findByUserId(identity.user_id)).display_name, null);
+  const response = await call(handle, '/api/me/profile/display-name', { method: 'PUT', token: 'newMember', body: { displayName: '新會員' } });
+  assert.equal(response.status, 200);
+  assert.equal((await repositories.profiles.findByUserId(identity.user_id)).display_name, '新會員');
+});
+scenario('38 display name runtime validation rejects blank values', async ({ handle }) => {
+  assert.equal((await call(handle, '/api/me/profile/display-name', { method: 'PUT', token: 'active', body: { displayName: '   ' } })).status, 422);
+});
+scenario('39 platform admin receives all communities in admin landing API', async ({ handle }) => {
+  const response = await call(handle, '/api/admin/communities', { token: 'platform' });
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.isPlatformAdmin, true);
+  assert.equal(payload.communities.some((community) => community.id === 'A'), true);
+  assert.equal(payload.communities.some((community) => community.id === 'B'), true);
+  assert.equal(payload.communities.some((community) => community.id === 'inactive'), true);
+});
+scenario('40 community admin admin landing API stays scoped to own communities', async ({ handle }) => {
+  const response = await call(handle, '/api/admin/communities', { token: 'adminA' });
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.isPlatformAdmin, false);
+  assert.deepEqual(payload.communities.map((community) => community.id), ['A']);
+});
+scenario('41 resident admin landing API returns no manageable communities', async ({ handle }) => {
+  const response = await call(handle, '/api/admin/communities', { token: 'active' });
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.isPlatformAdmin, false);
+  assert.deepEqual(payload.communities, []);
+});

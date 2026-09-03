@@ -21,7 +21,7 @@ export interface MembershipRow {
 export interface ProductRow { id: string; name: string; description: string | null; source_type: string; source_reference: string | null; unit_label: string; image_url: string | null; status: string }
 export interface OfferingRow { id: string; community_id: string; product_id: string; status: string; price_minor: number; currency: string; batch_threshold: number; min_quantity_per_order: number; max_quantity_per_order: number | null }
 export interface BatchRow { id: string; offering_id: string; sequence_number: number; status: string; threshold_quantity: number; committed_quantity: number }
-export interface WishRow { id: string; user_id: string; community_id: string; product_id: string | null; wish_text: string | null; status: string }
+export interface WishRow { id: string; user_id: string; community_id: string; community_name?: string; product_id: string | null; wish_text: string | null; status: string }
 export interface OrderRow { id: string; user_id: string; community_id: string; status: string; currency: string; estimated_total_minor: number; actual_total_minor: number | null; idempotency_key: string; contact_name_snapshot: string; contact_phone_snapshot: string; cancel_reason: string | null; created_at: string }
 export interface OrderItemRow { id: string; order_id: string; offering_id: string; product_id: string; product_name_snapshot: string; unit_label_snapshot: string; unit_price_minor: number; quantity: number; estimated_subtotal_minor: number }
 export interface PickupRow { id: string; order_id: string; community_id: string; status: string; scheduled_at: string | null; ready_at: string | null; picked_up_at: string | null }
@@ -61,6 +61,9 @@ export class UserProfileRepository extends RepositoryBase {
   changePhoneStatement(userId: string, phone: string) {
     return this.statement("UPDATE user_profiles SET phone = ?, phone_verified = CASE WHEN phone = ? THEN phone_verified ELSE 'false' END, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?", phone, phone, userId);
   }
+  changeDisplayNameStatement(userId: string, displayName: string) {
+    return this.statement('UPDATE user_profiles SET display_name = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?', displayName, userId);
+  }
 }
 
 export class UserIdentityRepository extends RepositoryBase {
@@ -83,6 +86,9 @@ export class UserIdentityRepository extends RepositoryBase {
 export class CommunityRepository extends RepositoryBase {
   async listActive(): Promise<CommunityRow[]> {
     return (await this.statement("SELECT id, name, slug, status, join_policy FROM communities WHERE status = 'active' ORDER BY name").all<CommunityRow>()).results ?? [];
+  }
+  async listAll(): Promise<CommunityRow[]> {
+    return (await this.statement('SELECT id, name, slug, status, join_policy FROM communities ORDER BY name').all<CommunityRow>()).results ?? [];
   }
   findById(id: string) { return this.statement('SELECT id, name, slug, status, join_policy FROM communities WHERE id = ?', id).first<CommunityRow>(); }
 }
@@ -261,7 +267,7 @@ export class ProductWishRepository extends RepositoryBase {
     return this.statement("INSERT INTO product_wishes (id,user_id,community_id,product_id,wish_text,status) VALUES (?,?,?,?,?,'open')", input.id, input.userId, input.communityId, input.productId ?? null, input.wishText ?? null);
   }
   findById(id: string) { return this.statement('SELECT id,user_id,community_id,product_id,wish_text,status FROM product_wishes WHERE id=?', id).first<WishRow>(); }
-  async listForUser(userId: string): Promise<WishRow[]> { return (await this.statement('SELECT id,user_id,community_id,product_id,wish_text,status FROM product_wishes WHERE user_id=? ORDER BY created_at DESC', userId).all<WishRow>()).results ?? []; }
+  async listForUser(userId: string): Promise<WishRow[]> { return (await this.statement('SELECT w.id,w.user_id,w.community_id,c.name AS community_name,w.product_id,w.wish_text,w.status FROM product_wishes w JOIN communities c ON c.id=w.community_id WHERE w.user_id=? ORDER BY w.created_at DESC', userId).all<WishRow>()).results ?? []; }
   async listForCommunity(communityId: string): Promise<WishRow[]> { return (await this.statement('SELECT id,user_id,community_id,product_id,wish_text,status FROM product_wishes WHERE community_id=? ORDER BY created_at DESC', communityId).all<WishRow>()).results ?? []; }
   updateStatusStatement(id: string, status: string) { return this.statement('UPDATE product_wishes SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?', status, id); }
 }
