@@ -98,7 +98,7 @@ export const auditLogs = sqliteTable('audit_logs', {
 }, (table) => [
   index('audit_logs_actor_created_idx').on(table.actorUserId, table.createdAt),
   index('audit_logs_community_created_idx').on(table.communityId, table.createdAt),
-  check('audit_logs_action_type_check', sql`${table.actionType} IN ('community_join', 'community_leave', 'default_community_change', 'identity_link', 'identity_unlink', 'admin_member_contact_access', 'product_created', 'offering_created', 'offering_updated', 'batch_formed', 'wish_created', 'wish_status_changed')`),
+  check('audit_logs_action_type_check', sql`${table.actionType} IN ('community_join', 'community_leave', 'default_community_change', 'identity_link', 'identity_unlink', 'admin_member_contact_access', 'product_created', 'offering_created', 'offering_updated', 'batch_formed', 'wish_created', 'wish_status_changed', 'order_created', 'order_cancelled', 'admin_order_cancelled', 'order_status_changed', 'pickup_created', 'pickup_ready', 'pickup_completed')`),
 ]);
 
 export const products = sqliteTable('products', {
@@ -153,25 +153,10 @@ export const groupBuyBatches = sqliteTable('group_buy_batches', {
 }, (table) => [
   uniqueIndex('group_buy_batches_offering_sequence_unique').on(table.offeringId, table.sequenceNumber),
   index('group_buy_batches_offering_status_idx').on(table.offeringId, table.status),
-  check('group_buy_batches_status_check', sql`${table.status} IN ('open', 'formed', 'closed', 'cancelled')`),
+  check('group_buy_batches_status_check', sql`${table.status} IN ('open', 'formed', 'locked', 'closed', 'cancelled')`),
   check('group_buy_batches_sequence_check', sql`${table.sequenceNumber} > 0`),
   check('group_buy_batches_threshold_check', sql`${table.thresholdQuantity} > 0`),
   check('group_buy_batches_committed_check', sql`${table.committedQuantity} >= 0 AND ${table.committedQuantity} <= ${table.thresholdQuantity}`),
-]);
-
-export const batchCommitments = sqliteTable('batch_commitments', {
-  id: text('id').primaryKey(),
-  requestId: text('request_id').notNull(),
-  batchId: text('batch_id').notNull().references(() => groupBuyBatches.id, { onDelete: 'restrict' }),
-  quantity: integer('quantity').notNull(),
-  sourceType: text('source_type').notNull().default('reservation'),
-  sourceReference: text('source_reference'),
-  createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
-}, (table) => [
-  uniqueIndex('batch_commitments_request_batch_unique').on(table.requestId, table.batchId),
-  index('batch_commitments_batch_idx').on(table.batchId),
-  check('batch_commitments_quantity_check', sql`${table.quantity} > 0`),
-  check('batch_commitments_source_check', sql`${table.sourceType} IN ('reservation', 'order_item')`),
 ]);
 
 export const productWishes = sqliteTable('product_wishes', {
@@ -187,4 +172,87 @@ export const productWishes = sqliteTable('product_wishes', {
   index('product_wishes_community_status_idx').on(table.communityId, table.status),
   check('product_wishes_status_check', sql`${table.status} IN ('open', 'reviewing', 'fulfilled', 'rejected')`),
   check('product_wishes_content_check', sql`${table.productId} IS NOT NULL OR COALESCE(length(trim(${table.wishText})), 0) > 0`),
+]);
+
+export const orders = sqliteTable('orders', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  communityId: text('community_id').notNull().references(() => communities.id, { onDelete: 'restrict' }),
+  status: text('status').notNull().default('submitted'),
+  currency: text('currency').notNull().default('TWD'),
+  estimatedTotalMinor: integer('estimated_total_minor').notNull(),
+  actualTotalMinor: integer('actual_total_minor'),
+  idempotencyKey: text('idempotency_key').notNull(),
+  contactNameSnapshot: text('contact_name_snapshot').notNull(),
+  contactPhoneSnapshot: text('contact_phone_snapshot').notNull(),
+  submittedAt: text('submitted_at').default(sql`CURRENT_TIMESTAMP`),
+  cancelledAt: text('cancelled_at'),
+  cancelReason: text('cancel_reason'),
+  cancelledByUserId: text('cancelled_by_user_id').references(() => users.id, { onDelete: 'restrict' }),
+  completedAt: text('completed_at'),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex('orders_user_idempotency_unique').on(table.userId, table.idempotencyKey),
+  index('orders_user_created_idx').on(table.userId, table.createdAt),
+  index('orders_community_status_idx').on(table.communityId, table.status),
+  check('orders_status_check', sql`${table.status} IN ('pending', 'submitted', 'partially_formed', 'formed', 'ready_for_pickup', 'completed', 'cancelled')`),
+  check('orders_estimated_total_check', sql`${table.estimatedTotalMinor} > 0`),
+  check('orders_actual_total_check', sql`${table.actualTotalMinor} IS NULL OR ${table.actualTotalMinor} >= 0`),
+]);
+
+export const orderItems = sqliteTable('order_items', {
+  id: text('id').primaryKey(),
+  orderId: text('order_id').notNull().references(() => orders.id, { onDelete: 'restrict' }),
+  offeringId: text('offering_id').notNull().references(() => communityProductOfferings.id, { onDelete: 'restrict' }),
+  productId: text('product_id').notNull().references(() => products.id, { onDelete: 'restrict' }),
+  productNameSnapshot: text('product_name_snapshot').notNull(),
+  unitLabelSnapshot: text('unit_label_snapshot').notNull(),
+  unitPriceMinor: integer('unit_price_minor').notNull(),
+  quantity: integer('quantity').notNull(),
+  estimatedSubtotalMinor: integer('estimated_subtotal_minor').notNull(),
+  actualUnitPriceMinor: integer('actual_unit_price_minor'),
+  actualSubtotalMinor: integer('actual_subtotal_minor'),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex('order_items_order_offering_unique').on(table.orderId, table.offeringId),
+  index('order_items_order_idx').on(table.orderId),
+  check('order_items_price_check', sql`${table.unitPriceMinor} > 0`),
+  check('order_items_quantity_check', sql`${table.quantity} > 0`),
+  check('order_items_subtotal_check', sql`${table.estimatedSubtotalMinor} = ${table.unitPriceMinor} * ${table.quantity}`),
+]);
+
+export const batchCommitments = sqliteTable('batch_commitments', {
+  id: text('id').primaryKey(),
+  requestId: text('request_id').notNull(),
+  batchId: text('batch_id').notNull().references(() => groupBuyBatches.id, { onDelete: 'restrict' }),
+  quantity: integer('quantity').notNull(),
+  sourceType: text('source_type').notNull().default('reservation'),
+  sourceReference: text('source_reference'),
+  orderItemId: text('order_item_id').references(() => orderItems.id, { onDelete: 'restrict' }),
+  status: text('status').notNull().default('active'),
+  cancelledAt: text('cancelled_at'),
+  createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex('batch_commitments_request_batch_unique').on(table.requestId, table.batchId),
+  index('batch_commitments_batch_idx').on(table.batchId),
+  index('batch_commitments_order_item_status_idx').on(table.orderItemId, table.status),
+  check('batch_commitments_quantity_check', sql`${table.quantity} > 0`),
+  check('batch_commitments_source_check', sql`${table.sourceType} IN ('reservation', 'order_item')`),
+  check('batch_commitments_status_check', sql`${table.status} IN ('active', 'cancelled')`),
+  check('batch_commitments_order_item_check', sql`(${table.sourceType} = 'order_item' AND ${table.orderItemId} IS NOT NULL) OR (${table.sourceType} = 'reservation' AND ${table.orderItemId} IS NULL)`),
+]);
+
+export const pickupRecords = sqliteTable('pickup_records', {
+  id: text('id').primaryKey(),
+  orderId: text('order_id').notNull().references(() => orders.id, { onDelete: 'restrict' }),
+  communityId: text('community_id').notNull().references(() => communities.id, { onDelete: 'restrict' }),
+  status: text('status').notNull().default('pending'),
+  scheduledAt: text('scheduled_at'),
+  readyAt: text('ready_at'),
+  pickedUpAt: text('picked_up_at'),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex('pickup_records_order_unique').on(table.orderId),
+  index('pickup_records_community_status_idx').on(table.communityId, table.status),
+  check('pickup_records_status_check', sql`${table.status} IN ('pending', 'ready', 'picked_up', 'cancelled')`),
 ]);

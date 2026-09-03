@@ -40,16 +40,18 @@ export class SQLiteD1Database {
 
 export async function createPhase3Database() {
   const db = new SQLiteD1Database();
-  for (const file of ['../../drizzle/0000_melted_otto_octavius.sql', '../../drizzle/0001_sticky_taskmaster.sql']) {
+  for (const file of ['../../drizzle/0000_melted_otto_octavius.sql', '../../drizzle/0001_sticky_taskmaster.sql','../../drizzle/0002_magical_gamma_corps.sql','../../drizzle/0003_bumpy_cannonball.sql']) {
     db.exec(await readFile(new URL(file, import.meta.url), 'utf8'));
   }
   return db;
 }
 
 export async function createPhase4Database() {
-  const db = await createPhase3Database();
-  db.exec(await readFile(new URL('../../drizzle/0002_magical_gamma_corps.sql', import.meta.url), 'utf8'));
-  return db;
+  return createPhase3Database();
+}
+
+export async function createPhase4BDatabase() {
+  return createPhase4Database();
 }
 
 export function seed(db, sql) { db.exec(sql); }

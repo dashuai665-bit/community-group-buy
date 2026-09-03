@@ -17,6 +17,7 @@ import {
   type OfferingStatus,
   type WishStatus,
 } from './services/catalog.ts';
+import { OrderService, PickupService } from './services/orders.ts';
 
 export interface AuthenticationAdapter {
   authenticate(request: Request): Promise<AuthenticatedProviderIdentity | null>;
@@ -74,6 +75,8 @@ export function createApplication(repositories: Repositories, authentication: Au
   const offerings = new CommunityOfferingService(repositories);
   const batches = new GroupBuyBatchService(repositories);
   const wishes = new ProductWishService(repositories);
+  const orders = new OrderService(repositories);
+  const pickups = new PickupService(repositories);
 
   async function appUser(request: Request): Promise<string | null> {
     const identity = await authentication.authenticate(request);
@@ -98,6 +101,25 @@ export function createApplication(repositories: Repositories, authentication: Au
           role: row.role, isDefault: row.community_id === profile?.default_community_id,
         })) });
       }
+      if (request.method === 'POST' && path === '/api/orders') {
+        const body=await readObject(request);
+        const key=typeof body.idempotencyKey==='string'?body.idempotencyKey:'';
+        if(!/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(key)) throw new ApiError(422,'VALIDATION_ERROR','idempotencyKey 格式或長度不正確');
+        if(!Array.isArray(body.items)||body.items.length===0||body.items.length>50) throw new ApiError(422,'VALIDATION_ERROR','items 必須包含 1 至 50 個品項');
+        const items=body.items.map((value)=>{ if(!value||typeof value!=='object'||Array.isArray(value)) throw new ApiError(422,'VALIDATION_ERROR','item 格式不正確'); const item=value as Record<string,unknown>; return {offeringId:validateId(item.offeringId,'offeringId'),quantity:validatePositiveInteger(item.quantity,'quantity')}; });
+        const result=await orders.create(await appUser(request),{communityId:validateId(body.communityId,'communityId'),idempotencyKey:key,items});
+        return Response.json(result,{status:result.created?201:200});
+      }
+      if(request.method==='GET'&&path==='/api/orders') return Response.json({orders:await orders.listMine(await appUser(request))});
+      let orderMatch=path.match(/^\/api\/orders\/([^/]+)$/);
+      if(request.method==='GET'&&orderMatch) return Response.json({order:await orders.getMine(await appUser(request),validateId(orderMatch[1],'orderId'))});
+      orderMatch=path.match(/^\/api\/orders\/([^/]+)\/cancel$/);
+      if(request.method==='POST'&&orderMatch){const body=await readObject(request);const reason=validateText(body.reason,'reason',500);return Response.json({order:await orders.cancel(await appUser(request),validateId(orderMatch[1],'orderId'),reason)});}
+      let adminOrderMatch=path.match(/^\/api\/admin\/communities\/([^/]+)\/orders(?:\/([^/]+))?$/);
+      if(request.method==='GET'&&adminOrderMatch&&!adminOrderMatch[2]) return Response.json({orders:await orders.listCommunity(await appUser(request),validateId(adminOrderMatch[1],'communityId'))});
+      if(request.method==='GET'&&adminOrderMatch?.[2]) return Response.json({order:await orders.getCommunity(await appUser(request),validateId(adminOrderMatch[1],'communityId'),validateId(adminOrderMatch[2],'orderId'))});
+      adminOrderMatch=path.match(/^\/api\/admin\/communities\/([^/]+)\/orders\/([^/]+)\/(cancel|ready|pickup\/complete)$/);
+      if(request.method==='POST'&&adminOrderMatch){const communityId=validateId(adminOrderMatch[1],'communityId'),orderId=validateId(adminOrderMatch[2],'orderId');if(adminOrderMatch[3]==='cancel'){const body=await readObject(request);return Response.json({order:await orders.cancel(await appUser(request),orderId,validateText(body.reason,'reason',500),communityId)});}if(adminOrderMatch[3]==='ready')return Response.json({pickup:await pickups.markReady(await appUser(request),communityId,orderId)});return Response.json({pickup:await pickups.complete(await appUser(request),communityId,orderId)});}
       if (request.method === 'POST' && path === '/api/admin/products') {
         const body = await readObject(request);
         const sourceType = String(body.sourceType);

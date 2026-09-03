@@ -107,7 +107,9 @@ export class CommunityMembershipService {
     if (membership.role === 'community_admin' && await this.repositories.members.countActiveAdmins(communityId) <= 1) {
       throw new ApiError(409, 'LAST_COMMUNITY_ADMIN', '請先移交管理權再離開社區');
     }
-    // Phase 4 可在此注入 unfinished orders / pickups gate。
+    if (await this.repositories.orders.hasUnfinishedForCommunity(userId, communityId)) {
+      throw new ApiError(409, 'UNFINISHED_ORDER_OR_PICKUP', '尚有未完成訂單或取貨，暫時無法離開社區');
+    }
   }
 
   async leave(userId: string | null, communityId: string): Promise<void> {

@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { Repositories } from '../../server/repositories/index.ts';
+import { OrderService } from '../../server/services/orders.ts';
+import { createPhase4BDatabase,seed } from '../helpers/sqlite-database.mjs';
+
+async function setup(){const db=await createPhase4BDatabase();seed(db,`INSERT INTO users(id) VALUES ('u');INSERT INTO user_profiles(user_id,display_name,phone) VALUES ('u','住戶','0900000000');INSERT INTO communities(id,name,slug) VALUES ('A','A','a');INSERT INTO community_members(id,user_id,community_id) VALUES ('m','u','A');INSERT INTO products(id,name,source_type,unit_label) VALUES ('p','米','manual','包');INSERT INTO community_product_offerings(id,community_id,product_id,price_minor,batch_threshold,min_quantity_per_order) VALUES ('o','A','p',100,30,1);`);const repositories=new Repositories({db});const created=await new OrderService(repositories).create('u',{communityId:'A',idempotencyKey:'reconcile-001',items:[{offeringId:'o',quantity:5}]});return{db,repositories,orderId:created.order.id};}
+test('healthy order 三項 reconciliation invariant 全部通過',async()=>{const c=await setup();assert.deepEqual(await c.repositories.reconciliation.inspect(c.orderId),{ok:true,itemDrift:[],batchDrift:[],totalDrift:[]});c.db.close();});
+test('偵測 order item commitment drift，不靜默修正',async()=>{const c=await setup();c.db.exec("UPDATE order_items SET quantity=6,estimated_subtotal_minor=600");const report=await c.repositories.reconciliation.inspect(c.orderId);assert.equal(report.ok,false);assert.equal(report.itemDrift.length,1);assert.equal(report.batchDrift.length,0);c.db.close();});
+test('偵測 batch cache drift',async()=>{const c=await setup();c.db.exec("UPDATE group_buy_batches SET committed_quantity=4");const report=await c.repositories.reconciliation.inspect(c.orderId);assert.equal(report.ok,false);assert.equal(report.batchDrift.length,1);c.db.close();});
+test('偵測 estimated total drift',async()=>{const c=await setup();c.db.exec("UPDATE orders SET estimated_total_minor=999");const report=await c.repositories.reconciliation.inspect(c.orderId);assert.equal(report.ok,false);assert.equal(report.totalDrift.length,1);c.db.close();});

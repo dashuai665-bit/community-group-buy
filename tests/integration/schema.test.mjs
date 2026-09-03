@@ -7,6 +7,7 @@ const migrationUrls = [
   new URL('../../drizzle/0000_melted_otto_octavius.sql', import.meta.url),
   new URL('../../drizzle/0001_sticky_taskmaster.sql', import.meta.url),
   new URL('../../drizzle/0002_magical_gamma_corps.sql', import.meta.url),
+  new URL('../../drizzle/0003_bumpy_cannonball.sql', import.meta.url),
 ];
 
 async function createMigratedDatabase() {
@@ -33,7 +34,7 @@ test('migration 可以重複建立兩個乾淨 SQLite DB，且 foreign_key_check
     ).all();
     assert.deepEqual(
       tables.map(({ name }) => name),
-      ['audit_logs', 'batch_commitments', 'communities', 'community_members', 'community_product_offerings', 'group_buy_batches', 'platform_roles', 'product_wishes', 'products', 'user_identities', 'user_profiles', 'users'],
+      ['audit_logs', 'batch_commitments', 'communities', 'community_members', 'community_product_offerings', 'group_buy_batches', 'order_items', 'orders', 'pickup_records', 'platform_roles', 'product_wishes', 'products', 'user_identities', 'user_profiles', 'users'],
     );
     assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
     database.close();
@@ -49,6 +50,20 @@ test('Phase 4A 金額、offering、batch 與 wish constraints 正確', async () 
   database.prepare("INSERT INTO group_buy_batches (id,offering_id,sequence_number,threshold_quantity) VALUES ('b1','o',1,30)").run();
   assert.throws(() => database.prepare("INSERT INTO group_buy_batches (id,offering_id,sequence_number,threshold_quantity) VALUES ('b2','o',1,30)").run(), /UNIQUE constraint failed/);
   assert.throws(() => database.prepare("INSERT INTO product_wishes (id,user_id,community_id) VALUES ('w','user-1','A')").run(), /CHECK constraint failed/);
+  database.close();
+});
+
+test('Phase 4B order idempotency、item linkage、pickup 與 status constraints 正確',async()=>{
+  const database=await createMigratedDatabase();seedUserAndCommunities(database);
+  database.prepare("INSERT INTO user_profiles(user_id,display_name,phone) VALUES ('user-1','住戶','0900000000')").run();
+  database.prepare("INSERT INTO products(id,name,source_type,unit_label) VALUES ('p','米','manual','包')").run();
+  database.prepare("INSERT INTO community_product_offerings(id,community_id,product_id,price_minor,batch_threshold,min_quantity_per_order) VALUES ('o','A','p',100,30,1)").run();
+  const insert=database.prepare("INSERT INTO orders(id,user_id,community_id,estimated_total_minor,idempotency_key,contact_name_snapshot,contact_phone_snapshot) VALUES (?,?,?,?,?,?,?)");
+  insert.run('order-1','user-1','A',100,'same','住戶','0900000000');
+  assert.throws(()=>insert.run('order-2','user-1','A',100,'same','住戶','0900000000'),/UNIQUE/);
+  assert.throws(()=>database.prepare("INSERT INTO order_items(id,order_id,offering_id,product_id,product_name_snapshot,unit_label_snapshot,unit_price_minor,quantity,estimated_subtotal_minor) VALUES ('i','missing','o','p','米','包',100,1,100)").run(),/FOREIGN KEY/);
+  database.prepare("INSERT INTO pickup_records(id,order_id,community_id) VALUES ('pickup','order-1','A')").run();
+  assert.throws(()=>database.prepare("UPDATE pickup_records SET status='unknown'").run(),/CHECK/);
   database.close();
 });
 

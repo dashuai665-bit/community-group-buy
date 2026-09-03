@@ -43,6 +43,18 @@
 - D1 寫入透過單一 `batch()` 依序執行容量建立、commitment ledger、快取重算、成團與 audit，並以 unique constraints 防止 request/sequence 重複。本機 concurrency 測試用 `BEGIN IMMEDIATE` 序列化模擬；production D1 的真實跨請求排程仍須在 preview/staging D1 做負載驗證。
 - 公開商品 API 僅回傳商品展示、價格與進度欄位；所有 offering 管理與 wish review 權限均由 server 驗證社區範圍。
 
+## Phase 4B 訂單、取消與取貨基礎
+
+- `orders` 是正式交易意圖，`order_items` 保存商品名稱、單位與下單價格 snapshot；offerings 日後改名或改價不會改寫歷史訂單。
+- 下單要求 `(user_id, idempotency_key)` 唯一。訂單、全部 items、batch allocations、cache/status 與 audit 都在同一個 D1 atomic batch；任一品項失敗就整張回滾。
+- 同一訂單禁止重複 offering，避免合併規則不透明；一張訂單可包含多個不同 offerings。
+- `batch_commitments.order_item_id` 連回 immutable commercial source。reconciliation 只報告 item quantity、batch cache 與 order total drift，不會靜默修資料。
+- 訂單 formation 狀態由 commitments 所在 batches 推導：全部未成團為 `submitted`、部分完成為 `partially_formed`、全部完成為 `formed`。
+- 一般會員可取消 `pending/submitted/partially_formed`；`formed` 需要該社區管理員或平台管理員。取消會在同一交易停用 commitments、重算 batch cache，未鎖定的 formed batch 若低於門檻會回到 open。
+- `locked` 是正式採購邊界。管理員將已成團訂單標記可取貨時，相關 batch 鎖定並建立 `pickup_records`；locked、ready-for-pickup 與 completed 訂單都不可取消。
+- pickup 的 `ready` 與 `picked_up` 會原子同步 order 的 `ready_for_pickup` 與 `completed`，未完成 order 或 pickup 會阻止會員離開社區。
+- 會員 API 不回傳 contact snapshots；只有經 server 驗證的 own-community admin 或 platform admin 可透過專用管理 API 取得訂單聯絡 snapshot。Audit 不保存取消原因、raw phone 或認證資料。
+
 ## 本機開發
 
 需求：Node.js 22.13 以上與 pnpm。
