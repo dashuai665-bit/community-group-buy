@@ -14,19 +14,25 @@ export class SQLiteD1Database {
   constructor(database = new DatabaseSync(':memory:')) {
     this.database = database;
     this.database.exec('PRAGMA foreign_keys = ON');
+    this.batchTail = Promise.resolve();
   }
   prepare(sql) { return new SQLiteStatement(this.database, sql); }
   async batch(statements) {
-    this.database.exec('BEGIN IMMEDIATE');
-    try {
-      const results = [];
-      for (const statement of statements) results.push(await statement.run());
-      this.database.exec('COMMIT');
-      return results;
-    } catch (error) {
-      this.database.exec('ROLLBACK');
-      throw error;
-    }
+    const execute = async () => {
+      this.database.exec('BEGIN IMMEDIATE');
+      try {
+        const results = [];
+        for (const statement of statements) results.push(await statement.run());
+        this.database.exec('COMMIT');
+        return results;
+      } catch (error) {
+        this.database.exec('ROLLBACK');
+        throw error;
+      }
+    };
+    const result = this.batchTail.then(execute, execute);
+    this.batchTail = result.catch(() => undefined);
+    return result;
   }
   exec(sql) { this.database.exec(sql); }
   close() { this.database.close(); }
@@ -37,6 +43,12 @@ export async function createPhase3Database() {
   for (const file of ['../../drizzle/0000_melted_otto_octavius.sql', '../../drizzle/0001_sticky_taskmaster.sql']) {
     db.exec(await readFile(new URL(file, import.meta.url), 'utf8'));
   }
+  return db;
+}
+
+export async function createPhase4Database() {
+  const db = await createPhase3Database();
+  db.exec(await readFile(new URL('../../drizzle/0002_magical_gamma_corps.sql', import.meta.url), 'utf8'));
   return db;
 }
 

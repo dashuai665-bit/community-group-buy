@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { check, foreignKey, index, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { check, foreignKey, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 const timestamps = {
   createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -98,5 +98,93 @@ export const auditLogs = sqliteTable('audit_logs', {
 }, (table) => [
   index('audit_logs_actor_created_idx').on(table.actorUserId, table.createdAt),
   index('audit_logs_community_created_idx').on(table.communityId, table.createdAt),
-  check('audit_logs_action_type_check', sql`${table.actionType} IN ('community_join', 'community_leave', 'default_community_change', 'identity_link', 'identity_unlink', 'admin_member_contact_access')`),
+  check('audit_logs_action_type_check', sql`${table.actionType} IN ('community_join', 'community_leave', 'default_community_change', 'identity_link', 'identity_unlink', 'admin_member_contact_access', 'product_created', 'offering_created', 'offering_updated', 'batch_formed', 'wish_created', 'wish_status_changed')`),
+]);
+
+export const products = sqliteTable('products', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  description: text('description'),
+  sourceType: text('source_type').notNull().default('manual'),
+  sourceReference: text('source_reference'),
+  unitLabel: text('unit_label').notNull(),
+  imageUrl: text('image_url'),
+  status: text('status').notNull().default('active'),
+  ...timestamps,
+}, (table) => [
+  check('products_source_type_check', sql`${table.sourceType} IN ('manual', 'costco', 'supplier', 'overseas', 'other')`),
+  check('products_status_check', sql`${table.status} IN ('active', 'inactive', 'archived')`),
+]);
+
+export const communityProductOfferings = sqliteTable('community_product_offerings', {
+  id: text('id').primaryKey(),
+  communityId: text('community_id').notNull().references(() => communities.id, { onDelete: 'restrict' }),
+  productId: text('product_id').notNull().references(() => products.id, { onDelete: 'restrict' }),
+  status: text('status').notNull().default('active'),
+  priceMinor: integer('price_minor').notNull(),
+  currency: text('currency').notNull().default('TWD'),
+  batchThreshold: integer('batch_threshold').notNull(),
+  minQuantityPerOrder: integer('min_quantity_per_order').notNull().default(1),
+  maxQuantityPerOrder: integer('max_quantity_per_order'),
+  startsAt: text('starts_at'),
+  endsAt: text('ends_at'),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex('community_product_offerings_community_product_unique').on(table.communityId, table.productId),
+  index('community_product_offerings_community_status_idx').on(table.communityId, table.status),
+  check('community_product_offerings_status_check', sql`${table.status} IN ('active', 'paused', 'ended')`),
+  check('community_product_offerings_price_check', sql`${table.priceMinor} > 0`),
+  check('community_product_offerings_threshold_check', sql`${table.batchThreshold} > 0`),
+  check('community_product_offerings_min_check', sql`${table.minQuantityPerOrder} > 0`),
+  check('community_product_offerings_max_check', sql`${table.maxQuantityPerOrder} IS NULL OR ${table.maxQuantityPerOrder} >= ${table.minQuantityPerOrder}`),
+]);
+
+export const groupBuyBatches = sqliteTable('group_buy_batches', {
+  id: text('id').primaryKey(),
+  offeringId: text('offering_id').notNull().references(() => communityProductOfferings.id, { onDelete: 'restrict' }),
+  sequenceNumber: integer('sequence_number').notNull(),
+  status: text('status').notNull().default('open'),
+  thresholdQuantity: integer('threshold_quantity').notNull(),
+  committedQuantity: integer('committed_quantity').notNull().default(0),
+  openedAt: text('opened_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+  formedAt: text('formed_at'),
+  closedAt: text('closed_at'),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex('group_buy_batches_offering_sequence_unique').on(table.offeringId, table.sequenceNumber),
+  index('group_buy_batches_offering_status_idx').on(table.offeringId, table.status),
+  check('group_buy_batches_status_check', sql`${table.status} IN ('open', 'formed', 'closed', 'cancelled')`),
+  check('group_buy_batches_sequence_check', sql`${table.sequenceNumber} > 0`),
+  check('group_buy_batches_threshold_check', sql`${table.thresholdQuantity} > 0`),
+  check('group_buy_batches_committed_check', sql`${table.committedQuantity} >= 0 AND ${table.committedQuantity} <= ${table.thresholdQuantity}`),
+]);
+
+export const batchCommitments = sqliteTable('batch_commitments', {
+  id: text('id').primaryKey(),
+  requestId: text('request_id').notNull(),
+  batchId: text('batch_id').notNull().references(() => groupBuyBatches.id, { onDelete: 'restrict' }),
+  quantity: integer('quantity').notNull(),
+  sourceType: text('source_type').notNull().default('reservation'),
+  sourceReference: text('source_reference'),
+  createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex('batch_commitments_request_batch_unique').on(table.requestId, table.batchId),
+  index('batch_commitments_batch_idx').on(table.batchId),
+  check('batch_commitments_quantity_check', sql`${table.quantity} > 0`),
+  check('batch_commitments_source_check', sql`${table.sourceType} IN ('reservation', 'order_item')`),
+]);
+
+export const productWishes = sqliteTable('product_wishes', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  communityId: text('community_id').notNull().references(() => communities.id, { onDelete: 'restrict' }),
+  productId: text('product_id').references(() => products.id, { onDelete: 'restrict' }),
+  wishText: text('wish_text'),
+  status: text('status').notNull().default('open'),
+  ...timestamps,
+}, (table) => [
+  index('product_wishes_user_status_idx').on(table.userId, table.status),
+  index('product_wishes_community_status_idx').on(table.communityId, table.status),
+  check('product_wishes_status_check', sql`${table.status} IN ('open', 'reviewing', 'fulfilled', 'rejected')`),
+  check('product_wishes_content_check', sql`${table.productId} IS NOT NULL OR COALESCE(length(trim(${table.wishText})), 0) > 0`),
 ]);

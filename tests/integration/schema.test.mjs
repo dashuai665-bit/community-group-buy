@@ -6,6 +6,7 @@ import test from 'node:test';
 const migrationUrls = [
   new URL('../../drizzle/0000_melted_otto_octavius.sql', import.meta.url),
   new URL('../../drizzle/0001_sticky_taskmaster.sql', import.meta.url),
+  new URL('../../drizzle/0002_magical_gamma_corps.sql', import.meta.url),
 ];
 
 async function createMigratedDatabase() {
@@ -32,11 +33,23 @@ test('migration 可以重複建立兩個乾淨 SQLite DB，且 foreign_key_check
     ).all();
     assert.deepEqual(
       tables.map(({ name }) => name),
-      ['audit_logs', 'communities', 'community_members', 'platform_roles', 'user_identities', 'user_profiles', 'users'],
+      ['audit_logs', 'batch_commitments', 'communities', 'community_members', 'community_product_offerings', 'group_buy_batches', 'platform_roles', 'product_wishes', 'products', 'user_identities', 'user_profiles', 'users'],
     );
     assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
     database.close();
   }
+});
+
+test('Phase 4A 金額、offering、batch 與 wish constraints 正確', async () => {
+  const database = await createMigratedDatabase();
+  seedUserAndCommunities(database);
+  database.prepare("INSERT INTO products (id,name,source_type,unit_label) VALUES ('p','米','manual','包')").run();
+  assert.throws(() => database.prepare("INSERT INTO community_product_offerings (id,community_id,product_id,price_minor,batch_threshold,min_quantity_per_order) VALUES ('bad','A','p',0,30,1)").run(), /CHECK constraint failed/);
+  database.prepare("INSERT INTO community_product_offerings (id,community_id,product_id,price_minor,batch_threshold,min_quantity_per_order) VALUES ('o','A','p',19900,30,1)").run();
+  database.prepare("INSERT INTO group_buy_batches (id,offering_id,sequence_number,threshold_quantity) VALUES ('b1','o',1,30)").run();
+  assert.throws(() => database.prepare("INSERT INTO group_buy_batches (id,offering_id,sequence_number,threshold_quantity) VALUES ('b2','o',1,30)").run(), /UNIQUE constraint failed/);
+  assert.throws(() => database.prepare("INSERT INTO product_wishes (id,user_id,community_id) VALUES ('w','user-1','A')").run(), /CHECK constraint failed/);
+  database.close();
 });
 
 test('同一 user 可加入三個社區，複合唯一限制拒絕重複 membership', async () => {

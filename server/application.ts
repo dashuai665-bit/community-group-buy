@@ -9,6 +9,14 @@ import {
   requireActiveUser,
   type AuthenticatedProviderIdentity,
 } from './services/index.ts';
+import {
+  CommunityOfferingService,
+  GroupBuyBatchService,
+  ProductCatalogService,
+  ProductWishService,
+  type OfferingStatus,
+  type WishStatus,
+} from './services/catalog.ts';
 
 export interface AuthenticationAdapter {
   authenticate(request: Request): Promise<AuthenticatedProviderIdentity | null>;
@@ -40,12 +48,32 @@ async function readObject(request: Request): Promise<Record<string, unknown>> {
   }
 }
 
+function validateText(value: unknown, field: string, maximum = 500): string {
+  if (typeof value !== 'string' || value.trim().length === 0 || value.trim().length > maximum) {
+    throw new ApiError(422, 'VALIDATION_ERROR', `${field} 格式不正確`);
+  }
+  return value.trim();
+}
+
+function validatePositiveInteger(value: unknown, field: string): number {
+  if (!Number.isSafeInteger(value) || Number(value) <= 0) throw new ApiError(422, 'VALIDATION_ERROR', `${field} 必須是正整數`);
+  return Number(value);
+}
+
+function validateOptionalPositiveInteger(value: unknown, field: string): number | null {
+  return value === undefined || value === null ? null : validatePositiveInteger(value, field);
+}
+
 export function createApplication(repositories: Repositories, authentication: AuthenticationAdapter) {
   const identities = new IdentityService(repositories);
   const memberships = new CommunityMembershipService(repositories);
   const preferences = new CommunityPreferenceService(repositories);
   const admin = new CommunityAdminService(repositories);
   const profiles = new ProfileService(repositories);
+  const products = new ProductCatalogService(repositories);
+  const offerings = new CommunityOfferingService(repositories);
+  const batches = new GroupBuyBatchService(repositories);
+  const wishes = new ProductWishService(repositories);
 
   async function appUser(request: Request): Promise<string | null> {
     const identity = await authentication.authenticate(request);
@@ -69,6 +97,85 @@ export function createApplication(repositories: Repositories, authentication: Au
           community: { id: row.community_id, name: row.name, slug: row.slug, status: row.community_status, joinPolicy: row.join_policy },
           role: row.role, isDefault: row.community_id === profile?.default_community_id,
         })) });
+      }
+      if (request.method === 'POST' && path === '/api/admin/products') {
+        const body = await readObject(request);
+        const sourceType = String(body.sourceType);
+        if (!['manual', 'costco', 'supplier', 'overseas', 'other'].includes(sourceType)) throw new ApiError(422, 'VALIDATION_ERROR', 'sourceType 不正確');
+        const product = await products.create(await appUser(request), {
+          name: validateText(body.name, 'name', 120),
+          description: body.description == null ? null : validateText(body.description, 'description', 2000),
+          sourceType,
+          sourceReference: body.sourceReference == null ? null : validateText(body.sourceReference, 'sourceReference', 500),
+          unitLabel: validateText(body.unitLabel, 'unitLabel', 40),
+          imageUrl: body.imageUrl == null ? null : validateText(body.imageUrl, 'imageUrl', 1000),
+        });
+        return Response.json({ product }, { status: 201 });
+      }
+      const productMatch = path.match(/^\/api\/communities\/([^/]+)\/products(?:\/([^/]+))?$/);
+      if (request.method === 'GET' && productMatch) {
+        const communityId = validateId(productMatch[1], 'communityId');
+        const community = await repositories.communities.findById(communityId);
+        if (!community || community.status !== 'active') throw new ApiError(404, 'COMMUNITY_NOT_FOUND', '找不到此社區');
+        if (productMatch[2]) {
+          const offering = await repositories.offerings.findPublicScoped(communityId, validateId(productMatch[2], 'offeringId'));
+          if (!offering) throw new ApiError(404, 'OFFERING_NOT_FOUND', '找不到此社區商品');
+          return Response.json({ offering });
+        }
+        return Response.json({ offerings: await repositories.offerings.listPublic(communityId) });
+      }
+      const offeringMatch = path.match(/^\/api\/admin\/communities\/([^/]+)\/offerings(?:\/([^/]+))?$/);
+      if (request.method === 'POST' && offeringMatch && !offeringMatch[2]) {
+        const body = await readObject(request);
+        const minQuantity = validatePositiveInteger(body.minQuantity, 'minQuantity');
+        const maxQuantity = validateOptionalPositiveInteger(body.maxQuantity, 'maxQuantity');
+        if (maxQuantity !== null && minQuantity > maxQuantity) throw new ApiError(422, 'VALIDATION_ERROR', 'minQuantity 不可大於 maxQuantity');
+        const offering = await offerings.create(await appUser(request), validateId(offeringMatch[1], 'communityId'), {
+          productId: validateId(body.productId, 'productId'),
+          priceMinor: validatePositiveInteger(body.priceMinor, 'priceMinor'),
+          batchThreshold: validatePositiveInteger(body.batchThreshold, 'batchThreshold'),
+          minQuantity, maxQuantity,
+        });
+        return Response.json({ offering }, { status: 201 });
+      }
+      if (request.method === 'PATCH' && offeringMatch?.[2]) {
+        const body = await readObject(request);
+        const status = String(body.status);
+        if (!['active', 'paused', 'ended'].includes(status)) throw new ApiError(422, 'VALIDATION_ERROR', 'status 不正確');
+        const minQuantity = validatePositiveInteger(body.minQuantity, 'minQuantity');
+        const maxQuantity = validateOptionalPositiveInteger(body.maxQuantity, 'maxQuantity');
+        if (maxQuantity !== null && minQuantity > maxQuantity) throw new ApiError(422, 'VALIDATION_ERROR', 'minQuantity 不可大於 maxQuantity');
+        const offering = await offerings.update(await appUser(request), validateId(offeringMatch[1], 'communityId'), validateId(offeringMatch[2], 'offeringId'), {
+          priceMinor: validatePositiveInteger(body.priceMinor, 'priceMinor'),
+          batchThreshold: validatePositiveInteger(body.batchThreshold, 'batchThreshold'),
+          minQuantity, maxQuantity, status: status as OfferingStatus,
+        });
+        return Response.json({ offering });
+      }
+      const commitmentMatch = path.match(/^\/api\/communities\/([^/]+)\/offerings\/([^/]+)\/commitments$/);
+      if (request.method === 'POST' && commitmentMatch) {
+        const body = await readObject(request);
+        const result = await batches.commitQuantity(await appUser(request), validateId(commitmentMatch[1], 'communityId'), validateId(commitmentMatch[2], 'offeringId'), validatePositiveInteger(body.quantity, 'quantity'), body.idempotencyKey === undefined ? undefined : validateId(body.idempotencyKey, 'idempotencyKey'));
+        return Response.json({ batches: result }, { status: 201 });
+      }
+      const wishCreateMatch = path.match(/^\/api\/communities\/([^/]+)\/wishes$/);
+      if (request.method === 'POST' && wishCreateMatch) {
+        const body = await readObject(request);
+        const wish = await wishes.create(await appUser(request), validateId(wishCreateMatch[1], 'communityId'), {
+          productId: body.productId == null ? null : validateId(body.productId, 'productId'),
+          wishText: body.wishText == null ? null : validateText(body.wishText, 'wishText', 500),
+        });
+        return Response.json({ wish }, { status: 201 });
+      }
+      if (request.method === 'GET' && path === '/api/me/wishes') return Response.json({ wishes: await wishes.listMine(await appUser(request)) });
+      const adminWishesMatch = path.match(/^\/api\/admin\/communities\/([^/]+)\/wishes(?:\/([^/]+))?$/);
+      if (request.method === 'GET' && adminWishesMatch && !adminWishesMatch[2]) return Response.json({ wishes: await wishes.listCommunity(await appUser(request), validateId(adminWishesMatch[1], 'communityId')) });
+      if (request.method === 'PATCH' && adminWishesMatch?.[2]) {
+        const body = await readObject(request);
+        const status = String(body.status);
+        if (!['open', 'reviewing', 'fulfilled', 'rejected'].includes(status)) throw new ApiError(422, 'VALIDATION_ERROR', 'status 不正確');
+        const wish = await wishes.updateStatus(await appUser(request), validateId(adminWishesMatch[1], 'communityId'), validateId(adminWishesMatch[2], 'wishId'), status as WishStatus);
+        return Response.json({ wish });
       }
       let match = path.match(/^\/api\/communities\/([^/]+)\/(join|leave)$/);
       if (request.method === 'POST' && match) {

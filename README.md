@@ -10,7 +10,7 @@
 - Cloudflare D1（SQLite）作為預計資料庫，透過 Drizzle ORM 與 migration 管理 schema
 - Git 版本管理，pnpm 鎖定相依套件版本
 
-目前已完成專案初始化、品牌首頁，以及 Phase 2 的會員、登入身份、多社區 membership、預設社區與 server-side authorization 基礎。尚未串接真實登入供應商，也未實作商品、訂單、付款或完整管理後台。
+目前已完成專案初始化、會員與多社區基礎，以及 Phase 4A 的商品目錄、社區供應、湊單批次與願望清單。尚未串接真實登入供應商，也未實作正式訂單、付款或完整管理後台。
 
 ## Phase 2 資料與權限基礎
 
@@ -30,6 +30,18 @@
 - 公開社區、我的社區、加入、離開、預設社區、identity、phone 與 community-scoped contact APIs 均透過 service layer 執行 invariant。
 - `audit_logs` 僅存最小化 metadata；禁止 raw phone、OTP、OAuth/session token 或 provider secrets。
 - 本機 HTTP 測試使用 dependency-injected auth adapter；production route 不信任 `X-User-Id` 類型的自訂身份 header。
+
+## Phase 4A 商品與湊單
+
+- `products` 是平台商品目錄，商品來源只是 `manual`、`costco`、`supplier`、`overseas` 或 `other` 等屬性，品牌不綁定任何供應商。
+- `community_product_offerings` 表示各社區自己的售價、門檻、數量限制與供應狀態；同一商品可由多個社區各自供應。
+- 金額一律用 `price_minor` 整數保存。目前 `currency` 為 `TWD`，慣例是以最小貨幣單位表示（NT$199 儲存為 `19900`），避免 floating point 誤差並預留多幣別演進。
+- 本階段每個 `(community_id, product_id)` 只有一筆 current offering。若同社區需要並存多版本，後續 migration 應新增 version/effective period 並將目前唯一限制改為「僅 current 唯一」，舊資料不得覆寫。
+- 每個 `group_buy_batches` 都保存不可變的 `threshold_quantity` snapshot 與連續 `sequence_number`。修改 offering 門檻只影響之後建立的批次。
+- `batch_commitments` 是 Phase 4A 數量的單一 truth source；`committed_quantity` 是在同一 atomic batch 內由 commitment sum 重算的快取。Phase 4B 接上 `order_items` 時，應讓 commitment 參照 order item，並提供 reconciliation 檢查，避免雙重 truth source。
+- 超出門檻的數量會依批次容量拆分，例如 `26 + 10` 形成 `30 formed + 6 open`；已 formed、closed 或 cancelled 的批次不再接受新增數量。
+- D1 寫入透過單一 `batch()` 依序執行容量建立、commitment ledger、快取重算、成團與 audit，並以 unique constraints 防止 request/sequence 重複。本機 concurrency 測試用 `BEGIN IMMEDIATE` 序列化模擬；production D1 的真實跨請求排程仍須在 preview/staging D1 做負載驗證。
+- 公開商品 API 僅回傳商品展示、價格與進度欄位；所有 offering 管理與 wish review 權限均由 server 驗證社區範圍。
 
 ## 本機開發
 

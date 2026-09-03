@@ -15,6 +15,13 @@
       "when": 1788415827199,
       "tag": "0001_sticky_taskmaster",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1788417358825,
+      "tag": "0002_magical_gamma_corps",
+      "breakpoints": true
     }
   ]
 }

@@ -18,6 +18,10 @@ export interface MembershipRow {
   id: string; user_id: string; community_id: string; role: 'resident' | 'community_admin';
   status: 'active' | 'inactive';
 }
+export interface ProductRow { id: string; name: string; description: string | null; source_type: string; source_reference: string | null; unit_label: string; image_url: string | null; status: string }
+export interface OfferingRow { id: string; community_id: string; product_id: string; status: string; price_minor: number; currency: string; batch_threshold: number; min_quantity_per_order: number; max_quantity_per_order: number | null }
+export interface BatchRow { id: string; offering_id: string; sequence_number: number; status: string; threshold_quantity: number; committed_quantity: number }
+export interface WishRow { id: string; user_id: string; community_id: string; product_id: string | null; wish_text: string | null; status: string }
 
 class RepositoryBase {
   protected readonly context: RepositoryContext;
@@ -125,6 +129,87 @@ export class AuditLogRepository extends RepositoryBase {
   }
 }
 
+export class ProductRepository extends RepositoryBase {
+  findById(id: string) { return this.statement('SELECT id,name,description,source_type,source_reference,unit_label,image_url,status FROM products WHERE id = ?', id).first<ProductRow>(); }
+  insertStatement(input: { id: string; name: string; description?: string | null; sourceType: string; sourceReference?: string | null; unitLabel: string; imageUrl?: string | null }) {
+    return this.statement("INSERT INTO products (id,name,description,source_type,source_reference,unit_label,image_url,status) VALUES (?,?,?,?,?,?,?,'active')", input.id, input.name, input.description ?? null, input.sourceType, input.sourceReference ?? null, input.unitLabel, input.imageUrl ?? null);
+  }
+}
+
+export class CommunityOfferingRepository extends RepositoryBase {
+  findById(id: string) { return this.statement('SELECT id,community_id,product_id,status,price_minor,currency,batch_threshold,min_quantity_per_order,max_quantity_per_order FROM community_product_offerings WHERE id = ?', id).first<OfferingRow>(); }
+  insertStatement(input: { id: string; communityId: string; productId: string; priceMinor: number; batchThreshold: number; minQuantity: number; maxQuantity?: number | null }) {
+    return this.statement("INSERT INTO community_product_offerings (id,community_id,product_id,status,price_minor,currency,batch_threshold,min_quantity_per_order,max_quantity_per_order) VALUES (?,?,?,'active',?,'TWD',?,?,?)", input.id, input.communityId, input.productId, input.priceMinor, input.batchThreshold, input.minQuantity, input.maxQuantity ?? null);
+  }
+  updateStatement(input: { id: string; priceMinor: number; batchThreshold: number; minQuantity: number; maxQuantity?: number | null; status: string }) {
+    return this.statement('UPDATE community_product_offerings SET price_minor=?,batch_threshold=?,min_quantity_per_order=?,max_quantity_per_order=?,status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?', input.priceMinor, input.batchThreshold, input.minQuantity, input.maxQuantity ?? null, input.status, input.id);
+  }
+  async listPublic(communityId: string) {
+    return (await this.statement(`SELECT o.id AS offering_id,o.product_id,o.status AS offering_status,o.price_minor,o.currency,o.batch_threshold,o.min_quantity_per_order,o.max_quantity_per_order,
+      p.name,p.description,p.image_url,p.unit_label,
+      b.id AS batch_id,COALESCE(b.sequence_number,1) AS sequence_number,COALESCE(b.status,'open') AS batch_status,COALESCE(b.threshold_quantity,o.batch_threshold) AS threshold_quantity,COALESCE(b.committed_quantity,0) AS committed_quantity
+      FROM community_product_offerings o JOIN products p ON p.id=o.product_id
+      LEFT JOIN group_buy_batches b ON b.offering_id=o.id AND b.status='open'
+      WHERE o.community_id=? AND o.status='active' AND p.status='active' ORDER BY p.name`, communityId).all()).results ?? [];
+  }
+  findPublicScoped(communityId: string, offeringId: string) {
+    return this.statement(`SELECT o.id AS offering_id,o.product_id,o.status AS offering_status,o.price_minor,o.currency,o.batch_threshold,o.min_quantity_per_order,o.max_quantity_per_order,
+      p.name,p.description,p.image_url,p.unit_label,
+      b.id AS batch_id,COALESCE(b.sequence_number,1) AS sequence_number,COALESCE(b.status,'open') AS batch_status,COALESCE(b.threshold_quantity,o.batch_threshold) AS threshold_quantity,COALESCE(b.committed_quantity,0) AS committed_quantity
+      FROM community_product_offerings o JOIN products p ON p.id=o.product_id
+      LEFT JOIN group_buy_batches b ON b.offering_id=o.id AND b.status='open'
+      WHERE o.id=? AND o.community_id=? AND o.status='active' AND p.status='active'`, offeringId, communityId).first<Record<string, unknown>>();
+  }
+}
+
+export class GroupBuyBatchRepository extends RepositoryBase {
+  async listForOffering(offeringId: string): Promise<BatchRow[]> {
+    return (await this.statement('SELECT id,offering_id,sequence_number,status,threshold_quantity,committed_quantity FROM group_buy_batches WHERE offering_id=? ORDER BY sequence_number', offeringId).all<BatchRow>()).results ?? [];
+  }
+  findOpen(offeringId: string) { return this.statement("SELECT id,offering_id,sequence_number,status,threshold_quantity,committed_quantity FROM group_buy_batches WHERE offering_id=? AND status='open' ORDER BY sequence_number LIMIT 1", offeringId).first<BatchRow>(); }
+  createOpenStatement(id: string, offeringId: string, sequence: number, threshold: number) {
+    return this.statement("INSERT INTO group_buy_batches (id,offering_id,sequence_number,status,threshold_quantity) VALUES (?,?,?,'open',?)", id, offeringId, sequence, threshold);
+  }
+  allocationStatements(input: { requestId: string; offeringId: string; quantity: number; actorUserId: string }): SqlStatement[] {
+    const { requestId, offeringId, quantity, actorUserId } = input;
+    const ensureCapacity = this.statement(`WITH RECURSIVE params AS (
+      SELECT o.batch_threshold AS threshold,
+        COALESCE((SELECT SUM(threshold_quantity-committed_quantity) FROM group_buy_batches WHERE offering_id=o.id AND status='open'),0) AS capacity,
+        COALESCE((SELECT MAX(sequence_number) FROM group_buy_batches WHERE offering_id=o.id),0) AS max_seq
+      FROM community_product_offerings o WHERE o.id=? AND o.status='active'
+    ), nums(n) AS (
+      SELECT 1 FROM params WHERE ? > capacity AND NOT EXISTS (SELECT 1 FROM batch_commitments WHERE request_id=?)
+      UNION ALL SELECT n+1 FROM nums,params WHERE n < CAST((? - capacity + threshold - 1) / threshold AS INTEGER)
+    ) INSERT INTO group_buy_batches (id,offering_id,sequence_number,status,threshold_quantity)
+      SELECT ? || '-batch-' || (max_seq+n), ?, max_seq+n, 'open', threshold FROM nums,params`, offeringId, quantity, requestId, quantity, requestId, offeringId);
+    const insertLedger = this.statement(`WITH capacities AS (
+      SELECT id,sequence_number,(threshold_quantity-committed_quantity) AS capacity,
+        COALESCE(SUM(threshold_quantity-committed_quantity) OVER (ORDER BY sequence_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0) AS prior_capacity
+      FROM group_buy_batches WHERE offering_id=? AND status='open'
+    ) INSERT OR IGNORE INTO batch_commitments (id,request_id,batch_id,quantity,source_type)
+      SELECT ? || '-commit-' || sequence_number, ?, id, MIN(capacity, MAX(0, ?-prior_capacity)), 'reservation'
+      FROM capacities WHERE ? > prior_capacity AND capacity > 0`, offeringId, requestId, requestId, quantity, quantity);
+    const refreshCache = this.statement(`UPDATE group_buy_batches SET committed_quantity=(SELECT COALESCE(SUM(quantity),0) FROM batch_commitments WHERE batch_id=group_buy_batches.id),updated_at=CURRENT_TIMESTAMP WHERE offering_id=? AND status='open'`, offeringId);
+    const formFull = this.statement("UPDATE group_buy_batches SET status='formed',formed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE offering_id=? AND status='open' AND committed_quantity=threshold_quantity", offeringId);
+    const auditFormed = this.statement(`INSERT OR IGNORE INTO audit_logs (id,actor_user_id,community_id,action_type,target_type,target_id,metadata)
+      SELECT ? || '-audit-' || b.id, ?, o.community_id, 'batch_formed', 'group_buy_batch', b.id,
+        json_object('offeringId',o.id,'batchId',b.id,'quantity',b.committed_quantity,'threshold',b.threshold_quantity)
+      FROM group_buy_batches b JOIN community_product_offerings o ON o.id=b.offering_id
+      WHERE b.offering_id=? AND b.status='formed' AND EXISTS (SELECT 1 FROM batch_commitments c WHERE c.batch_id=b.id AND c.request_id=?)`, requestId, actorUserId, offeringId, requestId);
+    return [ensureCapacity, insertLedger, refreshCache, formFull, auditFormed];
+  }
+}
+
+export class ProductWishRepository extends RepositoryBase {
+  insertStatement(input: { id: string; userId: string; communityId: string; productId?: string | null; wishText?: string | null }) {
+    return this.statement("INSERT INTO product_wishes (id,user_id,community_id,product_id,wish_text,status) VALUES (?,?,?,?,?,'open')", input.id, input.userId, input.communityId, input.productId ?? null, input.wishText ?? null);
+  }
+  findById(id: string) { return this.statement('SELECT id,user_id,community_id,product_id,wish_text,status FROM product_wishes WHERE id=?', id).first<WishRow>(); }
+  async listForUser(userId: string): Promise<WishRow[]> { return (await this.statement('SELECT id,user_id,community_id,product_id,wish_text,status FROM product_wishes WHERE user_id=? ORDER BY created_at DESC', userId).all<WishRow>()).results ?? []; }
+  async listForCommunity(communityId: string): Promise<WishRow[]> { return (await this.statement('SELECT id,user_id,community_id,product_id,wish_text,status FROM product_wishes WHERE community_id=? ORDER BY created_at DESC', communityId).all<WishRow>()).results ?? []; }
+  updateStatusStatement(id: string, status: string) { return this.statement('UPDATE product_wishes SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?', status, id); }
+}
+
 export class Repositories {
   readonly context: RepositoryContext;
   readonly users: UserRepository;
@@ -134,6 +219,10 @@ export class Repositories {
   readonly members: CommunityMemberRepository;
   readonly platformRoles: PlatformRoleRepository;
   readonly audits: AuditLogRepository;
+  readonly products: ProductRepository;
+  readonly offerings: CommunityOfferingRepository;
+  readonly batches: GroupBuyBatchRepository;
+  readonly wishes: ProductWishRepository;
   constructor(context: RepositoryContext) {
     this.context = context;
     this.users = new UserRepository(context);
@@ -143,6 +232,10 @@ export class Repositories {
     this.members = new CommunityMemberRepository(context);
     this.platformRoles = new PlatformRoleRepository(context);
     this.audits = new AuditLogRepository(context);
+    this.products = new ProductRepository(context);
+    this.offerings = new CommunityOfferingRepository(context);
+    this.batches = new GroupBuyBatchRepository(context);
+    this.wishes = new ProductWishRepository(context);
   }
   batch(statements: SqlStatement[]) { return this.context.db.batch(statements); }
 }
