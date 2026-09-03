@@ -8,6 +8,7 @@ const routes = [
   '/profile/communities',
   '/profile/wishes',
   '/admin',
+  '/admin/communities/fixture-community',
 ];
 
 const viewports = [
@@ -31,7 +32,7 @@ for (const viewport of viewports) {
       test(`${route} loads without horizontal overflow`, async ({ page }) => {
         const pageErrors: string[] = [];
 
-        page.on('pageerror', error => {
+        page.on('pageerror', (error) => {
           pageErrors.push(error.message);
         });
 
@@ -57,10 +58,7 @@ for (const viewport of viewports) {
           `${route} has ${overflow}px horizontal overflow at ${viewport.width}px`,
         ).toBeLessThanOrEqual(1);
 
-        expect(
-          pageErrors,
-          `${route} produced browser page errors`,
-        ).toEqual([]);
+        expect(pageErrors, `${route} produced browser page errors`).toEqual([]);
       });
     }
   });
@@ -93,4 +91,14 @@ test('管理入口可以開啟', async ({ page }) => {
   const response = await page.goto('/admin');
   expect(response?.status()).toBeLessThan(500);
   await expect(page.locator('body')).toBeVisible();
+});
+
+test('管理頁在未授權或 fixture 不存在時安全呈現', async ({ page }) => {
+  await page.goto('/admin');
+  await expect(page.getByRole('heading', { name: '管理工作台' })).toBeVisible();
+  await expect(page.getByText(/正在整理營運資料|沒有管理權限/)).toBeVisible();
+  await page.goto('/admin/communities/fixture-community');
+  await expect(
+    page.getByText(/正在載入社區營運資料|找不到此社區|沒有此社區的管理權限/),
+  ).toBeVisible();
 });
