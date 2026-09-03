@@ -10,7 +10,17 @@
 - Cloudflare D1（SQLite）作為預計資料庫，透過 Drizzle ORM 與 migration 管理 schema
 - Git 版本管理，pnpm 鎖定相依套件版本
 
-目前只完成專案初始化與品牌首頁，尚未實作登入、訂單、付款、管理後台或正式資料庫 schema。
+目前已完成專案初始化、品牌首頁，以及 Phase 2 的會員、登入身份、多社區 membership、預設社區與 server-side authorization 基礎。尚未串接真實登入供應商，也未實作商品、訂單、付款或完整管理後台。
+
+## Phase 2 資料與權限基礎
+
+- `users.id` 使用應用層產生的 UUID，email、phone 與 provider ID 均不是平台主鍵。
+- `user_identities` 以 `(provider, provider_user_id)` 唯一限制支援多登入身份；相同 email 或 phone 不會自動合併帳號。
+- `community_members` 以 `(user_id, community_id)` 唯一限制支援一位會員加入多個社區。
+- memberships、目前瀏覽社區與 `default_community_id` 是三個獨立概念；切換瀏覽社區不會修改預設社區。
+- `platform_roles` 獨立於社區 membership，使 platform admin 可安全地跨社區授權。
+- `domain/authorization.ts` 提供 server-side authentication、active user、membership、community admin 與 platform admin 檢查。
+- public serializer 不輸出電話、email 或 identity metadata；logging helper 會遮罩電話並排除 token、OTP 等敏感欄位。
 
 ## 本機開發
 
