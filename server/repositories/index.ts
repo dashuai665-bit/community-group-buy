@@ -64,6 +64,20 @@ export interface BatchRow {
   threshold_quantity: number;
   committed_quantity: number;
 }
+export interface GroupingRow extends BatchRow {
+  /** Shared condition identity; group_buy_batches.id is the unique instance ID. */
+  grouping_condition_key: string;
+  community_id: string;
+  product_id: string;
+  product_name: string;
+  unit_label: string;
+  currency: string;
+  price_minor: number;
+  formed_at: string | null;
+  oldest_order_time: string | null;
+  member_order_count: number;
+  estimated_amount_minor: number;
+}
 export interface WishRow {
   id: string;
   user_id: string;
@@ -488,6 +502,78 @@ export class CommunityOfferingRepository extends RepositoryBase {
 }
 
 export class GroupBuyBatchRepository extends RepositoryBase {
+  private groupingSelect(where: string, ...values: unknown[]) {
+    return this.statement(
+      `SELECT b.id,b.offering_id,o.community_id || ':' || o.id AS grouping_condition_key,b.sequence_number,b.status,b.threshold_quantity,b.committed_quantity,b.formed_at,
+      o.community_id,o.product_id,o.currency,o.price_minor,p.name AS product_name,p.unit_label,
+      MIN(CASE WHEN bc.status='active' THEN orders.created_at END) AS oldest_order_time,
+      COUNT(DISTINCT CASE WHEN bc.status='active' THEN orders.id END) AS member_order_count,
+      COALESCE(SUM(CASE WHEN bc.status='active' THEN bc.quantity*oi.unit_price_minor ELSE 0 END),0) AS estimated_amount_minor
+      FROM group_buy_batches b
+      JOIN community_product_offerings o ON o.id=b.offering_id
+      JOIN products p ON p.id=o.product_id
+      LEFT JOIN batch_commitments bc ON bc.batch_id=b.id
+      LEFT JOIN order_items oi ON oi.id=bc.order_item_id
+      LEFT JOIN orders ON orders.id=oi.order_id
+      WHERE ${where}
+      GROUP BY b.id,b.offering_id,b.sequence_number,b.status,b.threshold_quantity,b.committed_quantity,b.formed_at,o.community_id,o.product_id,o.currency,o.price_minor,p.name,p.unit_label`,
+      ...values,
+    );
+  }
+  async listForCommunity(communityId: string): Promise<GroupingRow[]> {
+    return (
+      (await this.groupingSelect('o.community_id=?', communityId).all<GroupingRow>())
+        .results ?? []
+    );
+  }
+  findGrouping(communityId: string, groupingId: string) {
+    return this.groupingSelect(
+      'o.community_id=? AND b.id=?',
+      communityId,
+      groupingId,
+    ).first<GroupingRow>();
+  }
+  async listDemand(groupingId: string) {
+    return (
+      (
+        await this.statement(
+          `SELECT orders.id AS order_id,oi.id AS order_item_id,oi.product_name_snapshot,oi.unit_label_snapshot,
+          bc.quantity,oi.unit_price_minor,orders.created_at AS order_created_at
+          FROM batch_commitments bc JOIN order_items oi ON oi.id=bc.order_item_id
+          JOIN orders ON orders.id=oi.order_id
+          WHERE bc.batch_id=? AND bc.status='active' ORDER BY orders.created_at,orders.id,oi.id`,
+          groupingId,
+        ).all<Record<string, unknown>>()
+      ).results ?? []
+    );
+  }
+  manualFormStatement(groupingId: string) {
+    return this.statement(
+      "UPDATE group_buy_batches SET status='formed',formed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='open' AND committed_quantity>0",
+      groupingId,
+    );
+  }
+  manualFormationAuditStatement(input: {
+    groupingId: string;
+    actorUserId: string;
+    communityId: string;
+    reason: string;
+    quantity: number;
+    threshold: number;
+  }) {
+    return this.statement(
+      `INSERT INTO audit_logs (id,actor_user_id,community_id,action_type,target_type,target_id,metadata)
+      SELECT ?,?,?,'batch_formed','group_buy_batch',?,json_object('mode','manual','reason',?,'quantity',?,'threshold',?)
+      WHERE changes()=1`,
+      `manual-form-${input.groupingId}`,
+      input.actorUserId,
+      input.communityId,
+      input.groupingId,
+      input.reason,
+      input.quantity,
+      input.threshold,
+    );
+  }
   async listForOffering(offeringId: string): Promise<BatchRow[]> {
     return (
       (
@@ -584,7 +670,30 @@ export class GroupBuyBatchRepository extends RepositoryBase {
   }
 }
 
+const derivedOrderFormationStatusSql = `CASE
+  WHEN NOT EXISTS (
+    SELECT 1 FROM order_items oi
+    JOIN batch_commitments bc ON bc.order_item_id=oi.id AND bc.status='active'
+    JOIN group_buy_batches b ON b.id=bc.batch_id
+    WHERE oi.order_id=orders.id AND b.status IN ('formed','locked','closed')
+  ) THEN 'submitted'
+  WHEN EXISTS (
+    SELECT 1 FROM order_items oi
+    JOIN batch_commitments bc ON bc.order_item_id=oi.id AND bc.status='active'
+    JOIN group_buy_batches b ON b.id=bc.batch_id
+    WHERE oi.order_id=orders.id AND b.status NOT IN ('formed','locked','closed')
+  ) THEN 'partially_formed'
+  ELSE 'formed'
+END`;
+
 export class OrderRepository extends RepositoryBase {
+  deriveStatusesForBatchStatement(batchId: string) {
+    return this.statement(
+      `UPDATE orders SET status=${derivedOrderFormationStatusSql},updated_at=CURRENT_TIMESTAMP
+      WHERE changes()=1 AND status IN ('submitted','partially_formed','formed') AND id IN (SELECT DISTINCT oi.order_id FROM order_items oi JOIN batch_commitments bc ON bc.order_item_id=oi.id WHERE bc.batch_id=?)`,
+      batchId,
+    );
+  }
   findById(id: string) {
     return this.statement(
       'SELECT * FROM orders WHERE id=?',
@@ -675,10 +784,7 @@ export class OrderRepository extends RepositoryBase {
   }
   deriveStatusStatement(orderId: string) {
     return this.statement(
-      `UPDATE orders SET status=CASE
-      WHEN NOT EXISTS (SELECT 1 FROM order_items oi JOIN batch_commitments bc ON bc.order_item_id=oi.id AND bc.status='active' JOIN group_buy_batches b ON b.id=bc.batch_id WHERE oi.order_id=orders.id AND b.status NOT IN ('formed','locked','closed')) THEN 'formed'
-      WHEN EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id=orders.id AND NOT EXISTS (SELECT 1 FROM batch_commitments bc JOIN group_buy_batches b ON b.id=bc.batch_id WHERE bc.order_item_id=oi.id AND bc.status='active' AND b.status NOT IN ('formed','locked','closed'))) THEN 'partially_formed'
-      ELSE 'submitted' END,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status NOT IN ('cancelled','ready_for_pickup','completed')`,
+      `UPDATE orders SET status=${derivedOrderFormationStatusSql},updated_at=CURRENT_TIMESTAMP WHERE id=? AND status NOT IN ('cancelled','ready_for_pickup','completed')`,
       orderId,
     );
   }
@@ -696,9 +802,7 @@ export class OrderRepository extends RepositoryBase {
   }
   deriveAffectedStatusesStatement(orderId: string) {
     return this.statement(
-      `UPDATE orders SET status=CASE
-    WHEN NOT EXISTS (SELECT 1 FROM order_items oi JOIN batch_commitments bc ON bc.order_item_id=oi.id AND bc.status='active' JOIN group_buy_batches b ON b.id=bc.batch_id WHERE oi.order_id=orders.id AND b.status NOT IN ('formed','locked','closed')) THEN 'formed'
-    WHEN EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id=orders.id AND NOT EXISTS (SELECT 1 FROM batch_commitments bc JOIN group_buy_batches b ON b.id=bc.batch_id WHERE bc.order_item_id=oi.id AND bc.status='active' AND b.status NOT IN ('formed','locked','closed'))) THEN 'partially_formed' ELSE 'submitted' END,updated_at=CURRENT_TIMESTAMP
+      `UPDATE orders SET status=${derivedOrderFormationStatusSql},updated_at=CURRENT_TIMESTAMP
     WHERE status IN ('submitted','partially_formed','formed') AND id IN (SELECT DISTINCT oi2.order_id FROM order_items oi2 JOIN batch_commitments bc2 ON bc2.order_item_id=oi2.id WHERE bc2.batch_id IN (SELECT bc3.batch_id FROM batch_commitments bc3 JOIN order_items oi3 ON oi3.id=bc3.order_item_id WHERE oi3.order_id=?))`,
       orderId,
     );

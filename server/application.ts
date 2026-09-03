@@ -19,6 +19,7 @@ import {
 } from './services/catalog.ts';
 import { OrderService, PickupService } from './services/orders.ts';
 import { AdminOperationsService } from './services/admin-operations.ts';
+import { GroupingService } from './services/groupings.ts';
 
 export interface AuthenticationAdapter {
   authenticate(request: Request): Promise<AuthenticatedProviderIdentity | null>;
@@ -63,6 +64,12 @@ function validateText(value: unknown, field: string, maximum = 500): string {
   return value.trim();
 }
 
+function validateFormationReason(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim() || value.trim().length > 500)
+    throw new ApiError(400, 'VALIDATION_ERROR', 'reason 格式不正確');
+  return value.trim();
+}
+
 function validatePositiveInteger(value: unknown, field: string): number {
   if (!Number.isSafeInteger(value) || Number(value) <= 0)
     throw new ApiError(422, 'VALIDATION_ERROR', `${field} 必須是正整數`);
@@ -94,6 +101,7 @@ export function createApplication(
   const orders = new OrderService(repositories);
   const pickups = new PickupService(repositories);
   const operations = new AdminOperationsService(repositories);
+  const groupings = new GroupingService(repositories);
 
   async function appUser(request: Request): Promise<string | null> {
     const identity = await authentication.authenticate(request);
@@ -147,6 +155,35 @@ export function createApplication(
             validateId(operationsMatch[1], 'communityId'),
           ),
         );
+      const groupingMatch = path.match(
+        /^\/api\/admin\/communities\/([^/]+)\/groupings(?:\/([^/]+))?(?:\/(form))?$/,
+      );
+      if (groupingMatch && request.method === 'GET' && !groupingMatch[2])
+        return Response.json({
+          groupings: await groupings.list(
+            await appUser(request),
+            validateId(groupingMatch[1], 'communityId'),
+          ),
+        });
+      if (groupingMatch && request.method === 'GET' && groupingMatch[2] && !groupingMatch[3])
+        return Response.json({
+          grouping: await groupings.get(
+            await appUser(request),
+            validateId(groupingMatch[1], 'communityId'),
+            validateId(groupingMatch[2], 'groupingId'),
+          ),
+        });
+      if (groupingMatch && request.method === 'POST' && groupingMatch[2] && groupingMatch[3]) {
+        const body = await readObject(request);
+        return Response.json({
+          grouping: await groupings.form(
+            await appUser(request),
+            validateId(groupingMatch[1], 'communityId'),
+            validateId(groupingMatch[2], 'groupingId'),
+            validateFormationReason(body.reason),
+          ),
+        });
+      }
       if (request.method === 'GET' && path === '/api/me/communities') {
         const userId = await appUser(request);
         const actor = await requireActiveUser(repositories, userId);

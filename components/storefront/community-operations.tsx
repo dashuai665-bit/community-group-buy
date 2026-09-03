@@ -23,21 +23,73 @@ type Order = {
   items: Array<{ product_name_snapshot: string; quantity: number }>;
 };
 type Wish = { id: string; wish_text: string | null; status: string };
+type Grouping = {
+  id: string;
+  product_name: string;
+  unit_label: string;
+  status: string;
+  committed_quantity: number;
+  threshold_quantity: number;
+  member_order_count: number;
+  estimated_amount_minor: number;
+  currency: string;
+  oldest_order_time: string | null;
+};
 export function CommunityOperations({ communityId }: { communityId: string }) {
   const [data, setData] = useState<{
       summary: Summary;
       orders: Order[];
       wishes: Wish[];
+      groupings: Grouping[];
     } | null>(null),
-    [error, setError] = useState('');
+    [error, setError] = useState(''),
+    [formationReason, setFormationReason] = useState<Record<string, string>>(
+      {},
+    ),
+    [forming, setForming] = useState('');
+  async function formGrouping(grouping: Grouping) {
+    const reason = formationReason[grouping.id]?.trim();
+    if (!reason) return setError('請填寫手動成團原因。');
+    if (!window.confirm(`確定要將「${grouping.product_name}」手動成團？`))
+      return;
+    setForming(grouping.id);
+    try {
+      const result = await api<{ grouping: Grouping }>(
+        `/api/admin/communities/${communityId}/groupings/${grouping.id}/form`,
+        { method: 'POST', body: JSON.stringify({ reason }) },
+      );
+      setData((current) =>
+        current
+          ? {
+              ...current,
+              groupings: current.groupings.map((item) =>
+                item.id === grouping.id ? result.grouping : item,
+              ),
+            }
+          : current,
+      );
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '手動成團失敗');
+    } finally {
+      setForming('');
+    }
+  }
   useEffect(() => {
     Promise.all([
       api<Summary>(`/api/admin/communities/${communityId}/summary`),
       api<{ orders: Order[] }>(`/api/admin/communities/${communityId}/orders`),
       api<{ wishes: Wish[] }>(`/api/admin/communities/${communityId}/wishes`),
+      api<{ groupings: Grouping[] }>(
+        `/api/admin/communities/${communityId}/groupings`,
+      ),
     ])
-      .then(([summary, orders, wishes]) =>
-        setData({ summary, orders: orders.orders, wishes: wishes.wishes }),
+      .then(([summary, orders, wishes, groupings]) =>
+        setData({
+          summary,
+          orders: orders.orders,
+          wishes: wishes.wishes,
+          groupings: groupings.groupings,
+        }),
       )
       .catch((e) =>
         setError(
@@ -74,6 +126,79 @@ export function CommunityOperations({ communityId }: { communityId: string }) {
         </div>
         <Link href="/admin">返回總覽</Link>
       </div>
+      <section className="ops-card">
+        <h2>目前集單</h2>
+        {!data.groupings.length ? (
+          <EmptyState
+            title="目前沒有集單"
+            description="居民下單後會依規格建立集單。"
+          />
+        ) : (
+          <div className="admin-order-list">
+            {data.groupings.map((grouping) => (
+              <article key={grouping.id}>
+                <div>
+                  <span className="status-pill">
+                    {grouping.status === 'open' ? '集單中' : '已成團'}
+                  </span>
+                  <h3>{grouping.product_name}</h3>
+                  <p>
+                    {grouping.committed_quantity} /{' '}
+                    {grouping.threshold_quantity} {grouping.unit_label} ·{' '}
+                    {grouping.member_order_count} 筆訂單
+                  </p>
+                  <progress
+                    max={grouping.threshold_quantity}
+                    value={Math.min(
+                      grouping.committed_quantity,
+                      grouping.threshold_quantity,
+                    )}
+                  />
+                  {grouping.status === 'open' &&
+                  grouping.committed_quantity > 0 ? (
+                    <div className="manual-form-controls">
+                      <label htmlFor={`formation-reason-${grouping.id}`}>
+                        手動成團原因
+                      </label>
+                      <input
+                        id={`formation-reason-${grouping.id}`}
+                        maxLength={500}
+                        value={formationReason[grouping.id] ?? ''}
+                        onChange={(event) =>
+                          setFormationReason((current) => ({
+                            ...current,
+                            [grouping.id]: event.target.value,
+                          }))
+                        }
+                      />
+                      <button
+                        type="button"
+                        disabled={forming === grouping.id}
+                        onClick={() => formGrouping(grouping)}
+                      >
+                        {forming === grouping.id ? '處理中…' : '手動成團'}
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+                <div>
+                  <strong>
+                    {formatMoney(
+                      grouping.estimated_amount_minor,
+                      grouping.currency,
+                    )}
+                  </strong>
+                  <small>
+                    {grouping.oldest_order_time
+                      ? `最早 ${grouping.oldest_order_time}`
+                      : '尚無訂單'}
+                  </small>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
       <section className="ops-card">
         <h2>社區基本資訊</h2>
         <p>

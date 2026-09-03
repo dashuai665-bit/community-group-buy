@@ -1,8 +1,8 @@
 export class ApiError extends Error {
-  readonly status: 401 | 403 | 404 | 409 | 422;
+  readonly status: 400 | 401 | 403 | 404 | 409 | 422;
   readonly code: string;
 
-  constructor(status: 401 | 403 | 404 | 409 | 422, code: string, message: string) {
+  constructor(status: 400 | 401 | 403 | 404 | 409 | 422, code: string, message: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
