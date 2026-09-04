@@ -367,6 +367,29 @@ export function createApplication(
       let adminOrderMatch = path.match(
         /^\/api\/admin\/communities\/([^/]+)\/orders(?:\/([^/]+))?$/,
       );
+      const pickupMatch = path.match(
+        /^\/api\/admin\/communities\/([^/]+)\/pickups(?:\/([^/]+)(?:\/(confirm-payment|confirm-handover))?)?$/,
+      );
+      if (pickupMatch) {
+        const communityId = validateId(pickupMatch[1], 'communityId');
+        const orderId = pickupMatch[2] ? validateId(pickupMatch[2], 'orderId') : null;
+        if (request.method === 'GET' && !orderId)
+          return Response.json({ pickups: await pickups.list(await appUser(request), communityId) });
+        if (request.method === 'GET' && orderId && !pickupMatch[3])
+          return Response.json({ pickup: await pickups.get(await appUser(request), communityId, orderId) });
+        if (request.method === 'POST' && orderId && pickupMatch[3] === 'confirm-payment') {
+          const body = await readObject(request);
+          if (Object.keys(body).length !== 0)
+            throw new ApiError(400, 'VALIDATION_ERROR', '收款金額由伺服器計算，request 不得攜帶欄位');
+          return Response.json({ pickup: await pickups.confirmPayment(await appUser(request), communityId, orderId) });
+        }
+        if (request.method === 'POST' && orderId && pickupMatch[3] === 'confirm-handover') {
+          const body = await readObject(request);
+          if (Object.keys(body).length !== 0)
+            throw new ApiError(400, 'VALIDATION_ERROR', '交付 request 不得攜帶欄位');
+          return Response.json({ pickup: await pickups.confirmHandover(await appUser(request), communityId, orderId) });
+        }
+      }
       if (request.method === 'GET' && adminOrderMatch && !adminOrderMatch[2])
         return Response.json({
           orders: await orders.listCommunity(

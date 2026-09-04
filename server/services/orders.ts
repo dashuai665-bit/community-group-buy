@@ -1,5 +1,6 @@
 import { createId } from '../../domain/ids.ts';
 import { deriveProcurementState } from '../../domain/procurement.ts';
+import { deriveFulfillment, requirePayableFulfillment } from '../../domain/fulfillment.ts';
 import { ApiError } from '../api-error.ts';
 import { Repositories, type OrderRow } from '../repositories/index.ts';
 import { requireActiveUser, isProfileComplete } from './index.ts';
@@ -46,6 +47,29 @@ export class OrderService {
     const procurementByItem = new Map(
       procurementRows.map((row) => [String(row.order_item_id), row]),
     );
+    const publicItems = items.map((item) => {
+      const procurement = procurementByItem.get(item.id);
+      const finalizedQuantity = Number(procurement?.finalized_quantity ?? 0);
+      return {
+        ...item,
+        procurement: {
+          state: deriveProcurementState(item.quantity, finalizedQuantity),
+          fulfilledQuantity: Number(procurement?.fulfilled_quantity ?? 0),
+          shortageQuantity: Number(procurement?.shortage_quantity ?? 0),
+          finalPayableMinor: Number(procurement?.final_payable_minor ?? 0),
+        },
+      };
+    });
+    const paymentStatus = (await this.repositories.pickups.findFulfillment(order.id))?.payment_status === 'paid' ? 'paid' : 'unpaid';
+    const pickupStatus = pickup?.status === 'picked_up' ? 'handed_over' : 'pending';
+    const fulfillment = deriveFulfillment({
+      orderedQuantity: publicItems.reduce((sum, item) => sum + item.quantity, 0),
+      finalizedQuantity: procurementRows.reduce((sum, row) => sum + Number(row.finalized_quantity ?? 0), 0),
+      fulfilledQuantity: publicItems.reduce((sum, item) => sum + item.procurement.fulfilledQuantity, 0),
+      finalPayableMinor: publicItems.reduce((sum, item) => sum + item.procurement.finalPayableMinor, 0),
+      paymentStatus,
+      pickupStatus,
+    });
     const publicOrder: Record<string, unknown> = {
       id: order.id,
       userId: order.user_id,
@@ -56,20 +80,14 @@ export class OrderService {
       estimatedTotalMinor: order.estimated_total_minor,
       actualTotalMinor: order.actual_total_minor,
       createdAt: order.created_at,
-      items: items.map((item) => {
-        const procurement = procurementByItem.get(item.id);
-        const finalizedQuantity = Number(procurement?.finalized_quantity ?? 0);
-        return {
-          ...item,
-          procurement: {
-            state: deriveProcurementState(item.quantity, finalizedQuantity),
-            fulfilledQuantity: Number(procurement?.fulfilled_quantity ?? 0),
-            shortageQuantity: Number(procurement?.shortage_quantity ?? 0),
-            finalPayableMinor: Number(procurement?.final_payable_minor ?? 0),
-          },
-        };
-      }),
-      pickup,
+      items: publicItems,
+      fulfillment: {
+        ...fulfillment,
+        paymentStatus,
+        pickupStatus,
+        pickupLocation: pickup?.pickup_location_snapshot ?? null,
+        pickupWindow: pickup?.pickup_window_snapshot ?? null,
+      },
     };
     if (includeContact)
       publicOrder.contact = {
@@ -329,6 +347,92 @@ export class PickupService {
   constructor(repositories: Repositories) {
     this.repositories = repositories;
   }
+  private async detail(communityId: string, orderId: string) {
+    const row = await this.repositories.pickups.findFulfillment(orderId);
+    if (!row || row.community_id !== communityId)
+      throw new ApiError(404, 'ORDER_NOT_FOUND', '找不到此社區訂單');
+    const paymentStatus = row.payment_status === 'paid' ? 'paid' : 'unpaid';
+    const pickupStatus = row.pickup_status === 'picked_up' ? 'handed_over' : 'pending';
+    const derived = deriveFulfillment({
+      orderedQuantity: Number(row.ordered_quantity),
+      finalizedQuantity: Number(row.finalized_quantity),
+      fulfilledQuantity: Number(row.fulfilled_quantity),
+      finalPayableMinor: Number(row.final_payable_minor),
+      paymentStatus,
+      pickupStatus,
+    });
+    const pickup = await this.repositories.pickups.findByOrderId(orderId);
+    return {
+      orderId: row.id,
+      communityId: row.community_id,
+      memberDisplayName: row.display_name,
+      currency: row.currency,
+      orderedQuantity: Number(row.ordered_quantity),
+      finalizedQuantity: Number(row.finalized_quantity),
+      fulfilledQuantity: Number(row.fulfilled_quantity),
+      shortageQuantity: Number(row.shortage_quantity),
+      finalPayableMinor: Number(row.final_payable_minor),
+      paymentStatus,
+      pickupStatus,
+      pickupLocation: pickup?.pickup_location_snapshot ?? null,
+      pickupWindow: pickup?.pickup_window_snapshot ?? null,
+      ...derived,
+      items: await this.repositories.pickups.listFulfillmentItems(orderId),
+    };
+  }
+  async list(userId: string | null, communityId: string) {
+    await requireManager(this.repositories, userId, communityId);
+    const rows = await this.repositories.pickups.listFulfillments(communityId);
+    return Promise.all(rows.map((row) => this.detail(communityId, row.id)));
+  }
+  async get(userId: string | null, communityId: string, orderId: string) {
+    await requireManager(this.repositories, userId, communityId);
+    return this.detail(communityId, orderId);
+  }
+  async confirmPayment(userId: string | null, communityId: string, orderId: string) {
+    const actor = await requireManager(this.repositories, userId, communityId);
+    const current = await this.detail(communityId, orderId);
+    const eligibility = requirePayableFulfillment({
+      orderedQuantity: current.orderedQuantity,
+      finalizedQuantity: current.finalizedQuantity,
+      fulfilledQuantity: current.fulfilledQuantity,
+      finalPayableMinor: current.finalPayableMinor,
+    });
+    if (eligibility)
+      throw new ApiError(409, eligibility, eligibility === 'PROCUREMENT_NOT_FINALIZED' ? '採購結果尚未全部確認' : '此訂單無需收款或取貨');
+    if (current.paymentStatus === 'paid') return current;
+    const results = await this.repositories.batch([
+      this.repositories.pickups.paymentStatement(orderId, communityId, current.finalPayableMinor, actor.id),
+      this.repositories.pickups.paymentAuditStatement(createId(), actor.id, communityId, orderId, current.finalPayableMinor),
+      this.repositories.pickups.prepareStatement(createId(), orderId, communityId, '社區指定地點', '請依社區通知'),
+      this.repositories.pickups.fulfillmentOrderReadyStatement(orderId),
+    ]);
+    if (Number((results[0]?.meta as { changes?: unknown } | undefined)?.changes ?? 0) === 0)
+      return this.detail(communityId, orderId);
+    return this.detail(communityId, orderId);
+  }
+  async confirmHandover(userId: string | null, communityId: string, orderId: string) {
+    const actor = await requireManager(this.repositories, userId, communityId);
+    const current = await this.detail(communityId, orderId);
+    if (!current.procurementResolved)
+      throw new ApiError(409, 'PROCUREMENT_NOT_FINALIZED', '採購結果尚未全部確認');
+    if (!current.requiresPickup)
+      throw new ApiError(409, 'NO_PICKUP_REQUIRED', '此訂單無需取貨');
+    if (current.paymentStatus !== 'paid')
+      throw new ApiError(409, 'PAYMENT_REQUIRED', '請先確認收到現金');
+    if (current.pickupStatus === 'handed_over') return current;
+    const results = await this.repositories.batch([
+      this.repositories.pickups.handoverStatement(orderId, actor.id),
+      this.repositories.pickups.handoverAuditStatement(createId(), actor.id, communityId, orderId),
+      this.repositories.pickups.fulfillmentOrderCompleteStatement(orderId),
+    ]);
+    if (Number((results[0]?.meta as { changes?: unknown } | undefined)?.changes ?? 0) === 0) {
+      const winner = await this.detail(communityId, orderId);
+      if (winner.pickupStatus === 'handed_over') return winner;
+      throw new ApiError(409, 'HANDOVER_CONFLICT', '取貨狀態已變更');
+    }
+    return this.detail(communityId, orderId);
+  }
   async markReady(userId: string | null, communityId: string, orderId: string) {
     const actor = await requireManager(this.repositories, userId, communityId);
     const order = await this.repositories.orders.findById(orderId);
@@ -336,6 +440,9 @@ export class PickupService {
       throw new ApiError(404, 'ORDER_NOT_FOUND', '找不到此社區訂單');
     if (order.status !== 'formed')
       throw new ApiError(409, 'ORDER_NOT_FORMED', '訂單尚未全部成團');
+    const fulfillment = await this.detail(communityId, orderId);
+    if (!fulfillment.procurementResolved || !fulfillment.requiresPickup)
+      throw new ApiError(409, 'PROCUREMENT_NOT_FINALIZED', '採購結果尚未全部確認');
     const pickupId = createId();
     await this.repositories.batch([
       this.repositories.pickups.lockBatchesStatement(orderId),
@@ -371,34 +478,7 @@ export class PickupService {
     return this.repositories.pickups.findByOrderId(orderId);
   }
   async complete(userId: string | null, communityId: string, orderId: string) {
-    const actor = await requireManager(this.repositories, userId, communityId);
-    const order = await this.repositories.orders.findById(orderId);
-    if (!order || order.community_id !== communityId)
-      throw new ApiError(404, 'ORDER_NOT_FOUND', '找不到此社區訂單');
-    if (order.status !== 'ready_for_pickup')
-      throw new ApiError(409, 'PICKUP_NOT_READY', '取貨尚未就緒');
-    await this.repositories.batch([
-      this.repositories.pickups.completeStatement(orderId),
-      this.repositories.pickups.orderCompleteStatement(orderId),
-      this.repositories.audits.insertStatement({
-        id: createId(),
-        actorUserId: actor.id,
-        communityId,
-        actionType: 'pickup_completed',
-        targetType: 'order',
-        targetId: orderId,
-      }),
-      this.repositories.audits.insertStatement({
-        id: createId(),
-        actorUserId: actor.id,
-        communityId,
-        actionType: 'order_status_changed',
-        targetType: 'order',
-        targetId: orderId,
-        metadata: { from: 'ready_for_pickup', to: 'completed' },
-      }),
-    ]);
-    return this.repositories.pickups.findByOrderId(orderId);
+    return this.confirmHandover(userId, communityId, orderId);
   }
 }
 

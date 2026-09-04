@@ -66,6 +66,18 @@ type PurchaseBatchDetail = PurchaseBatch & {
     finalizedAt: string;
   };
 };
+type Pickup = {
+  orderId: string;
+  memberDisplayName: string | null;
+  currency: string;
+  fulfilledQuantity: number;
+  shortageQuantity: number;
+  finalPayableMinor: number;
+  paymentStatus: 'unpaid' | 'paid';
+  pickupStatus: 'pending' | 'handed_over';
+  completionState: 'procurement_pending' | 'no_pickup_required' | 'ready_for_payment' | 'paid_pending_pickup' | 'completed';
+  items: Array<{ product_name_snapshot: string; fulfilled_quantity: number }>;
+};
 export function CommunityOperations({ communityId }: { communityId: string }) {
   const [data, setData] = useState<{
       summary: Summary;
@@ -73,6 +85,7 @@ export function CommunityOperations({ communityId }: { communityId: string }) {
       wishes: Wish[];
       groupings: Grouping[];
       purchases: PurchaseOperations;
+      pickups: Pickup[];
     } | null>(null),
     [error, setError] = useState(''),
     [formationReason, setFormationReason] = useState<Record<string, string>>(
@@ -87,7 +100,23 @@ export function CommunityOperations({ communityId }: { communityId: string }) {
     ),
     [purchaseResults, setPurchaseResults] = useState<
       Record<string, { purchasedQuantity: string; actualUnitPriceMinor: string }>
-    >({});
+    >({}),
+    [pickupAction, setPickupAction] = useState('');
+  async function reloadPickups() {
+    const result = await api<{ pickups: Pickup[] }>(`/api/admin/communities/${communityId}/pickups`);
+    setData((current) => current ? { ...current, pickups: result.pickups } : current);
+  }
+  async function updatePickup(orderId: string, action: 'confirm-payment' | 'confirm-handover') {
+    setPickupAction(`${orderId}-${action}`);
+    try {
+      await api(`/api/admin/communities/${communityId}/pickups/${orderId}/${action}`, { method: 'POST', body: '{}' });
+      await reloadPickups();
+    } catch (cause) {
+      setPurchaseMessage(cause instanceof Error ? cause.message : '取貨作業失敗');
+    } finally {
+      setPickupAction('');
+    }
+  }
   async function showPurchaseBatch(id: string) {
     setPurchaseAction(`detail-${id}`);
     try {
@@ -231,14 +260,16 @@ export function CommunityOperations({ communityId }: { communityId: string }) {
       api<PurchaseOperations>(
         `/api/admin/communities/${communityId}/purchase-batches`,
       ),
+      api<{ pickups: Pickup[] }>(`/api/admin/communities/${communityId}/pickups`),
     ])
-      .then(([summary, orders, wishes, groupings, purchases]) =>
+      .then(([summary, orders, wishes, groupings, purchases, pickups]) =>
         setData({
           summary,
           orders: orders.orders,
           wishes: wishes.wishes,
           groupings: groupings.groupings,
           purchases,
+          pickups: pickups.pickups,
         }),
       )
       .catch((e) =>
@@ -276,6 +307,12 @@ export function CommunityOperations({ communityId }: { communityId: string }) {
         </div>
         <Link href="/admin">返回總覽</Link>
       </div>
+      <section className="ops-card">
+        <h2>待面交／取貨</h2>
+        {!data.pickups.length ? <EmptyState title="目前沒有取貨作業" description="採購結果全部確認後會顯示在這裡。" /> : (
+          <div className="admin-order-list">{data.pickups.map((pickup) => <article key={pickup.orderId}><div><span className="status-pill">{pickup.completionState === 'no_pickup_required' ? '全數缺貨／無需取貨' : pickup.pickupStatus === 'handed_over' ? '已完成取貨' : pickup.paymentStatus === 'paid' ? '已付款待領取' : pickup.completionState === 'procurement_pending' ? '採購尚未確認' : '可取貨'}</span><h3>{pickup.memberDisplayName ?? '住戶'} · {pickup.orderId.slice(0, 8)}</h3><p>{pickup.items.map((item) => `${item.product_name_snapshot} ${item.fulfilled_quantity}`).join('、') || '無履約商品'}</p><small>實配 {pickup.fulfilledQuantity} · 缺貨 {pickup.shortageQuantity}</small></div><div><strong>{formatMoney(pickup.finalPayableMinor, pickup.currency)}</strong>{pickup.completionState === 'ready_for_payment' ? <button disabled={Boolean(pickupAction)} onClick={() => void updatePickup(pickup.orderId, 'confirm-payment')}>確認收到現金</button> : pickup.completionState === 'paid_pending_pickup' ? <button disabled={Boolean(pickupAction)} onClick={() => void updatePickup(pickup.orderId, 'confirm-handover')}>確認已交付</button> : null}</div></article>)}</div>
+        )}
+      </section>
       <section className="ops-card">
         <h2>目前集單</h2>
         {!data.groupings.length ? (

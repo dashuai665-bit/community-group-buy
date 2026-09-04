@@ -10,6 +10,7 @@ const migrationUrls = [
   new URL('../../drizzle/0003_bumpy_cannonball.sql', import.meta.url),
   new URL('../../drizzle/0004_purchase_batches.sql', import.meta.url),
   new URL('../../drizzle/0005_purchase_finalization.sql', import.meta.url),
+  new URL('../../drizzle/0006_order_fulfillment.sql', import.meta.url),
 ];
 
 async function createMigratedDatabase() {
@@ -36,7 +37,7 @@ test('migration 可以重複建立兩個乾淨 SQLite DB，且 foreign_key_check
     ).all();
     assert.deepEqual(
       tables.map(({ name }) => name),
-      ['audit_logs', 'batch_commitments', 'communities', 'community_members', 'community_product_offerings', 'group_buy_batches', 'order_items', 'orders', 'pickup_records', 'platform_roles', 'product_wishes', 'products', 'purchase_allocations', 'purchase_batch_finalizations', 'purchase_batch_groups', 'purchase_batches', 'purchase_group_results', 'purchase_receipts', 'user_identities', 'user_profiles', 'users'],
+      ['audit_logs', 'batch_commitments', 'cash_payments', 'communities', 'community_members', 'community_product_offerings', 'group_buy_batches', 'order_items', 'orders', 'pickup_records', 'platform_roles', 'product_wishes', 'products', 'purchase_allocations', 'purchase_batch_finalizations', 'purchase_batch_groups', 'purchase_batches', 'purchase_group_results', 'purchase_receipts', 'user_identities', 'user_profiles', 'users'],
     );
     assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
     database.close();
@@ -132,6 +133,35 @@ test('Phase 6D finalized records immutable 且 allocation relationships 受 DB �
   const savedAllocation = database.prepare("SELECT fulfilled_quantity,final_amount_minor FROM purchase_allocations WHERE batch_commitment_id='commit1'").get();
   assert.equal(savedAllocation.fulfilled_quantity, 1);
   assert.equal(savedAllocation.final_amount_minor, 100);
+  assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
+  database.close();
+});
+
+test('Phase 6E cash payment 與 pickup operational constraints 正確', async () => {
+  const database = await createMigratedDatabase();
+  seedUserAndCommunities(database);
+  database.exec("INSERT INTO user_profiles(user_id)VALUES('user-1');INSERT INTO products(id,name,source_type,unit_label)VALUES('product','米','manual','包');INSERT INTO community_product_offerings(id,community_id,product_id,price_minor,batch_threshold,min_quantity_per_order)VALUES('offering','A','product',100,10,1);INSERT INTO orders(id,user_id,community_id,status,estimated_total_minor,idempotency_key,contact_name_snapshot,contact_phone_snapshot)VALUES('o','user-1','A','formed',1000,'order-key','住戶','0900'),('zero','user-1','A','formed',1000,'zero-key','住戶','0900'),('pending','user-1','A','formed',1000,'pending-key','住戶','0900');INSERT INTO order_items(id,order_id,offering_id,product_id,product_name_snapshot,unit_label_snapshot,unit_price_minor,quantity,estimated_subtotal_minor)VALUES('item','o','offering','product','米','包',100,10,1000),('zero-item','zero','offering','product','米','包',100,10,1000),('pending-item','pending','offering','product','米','包',100,10,1000);INSERT INTO group_buy_batches(id,offering_id,sequence_number,status,threshold_quantity,committed_quantity)VALUES('group1','offering',1,'formed',10,10),('group0','offering',2,'formed',10,10);INSERT INTO batch_commitments(id,request_id,batch_id,quantity,source_type,source_reference,order_item_id,status)VALUES('commit','request','group1',10,'order_item','item','item','active'),('zero-commit','zero-request','group0',10,'order_item','zero-item','zero-item','active');INSERT INTO purchase_batches(id,community_id,status,idempotency_key,created_by_user_id)VALUES('pb','A','purchasing','pb-key','user-1'),('pb0','A','purchasing','pb0-key','user-1');INSERT INTO purchase_batch_groups(purchase_batch_id,group_buy_batch_id)VALUES('pb','group1'),('pb0','group0');INSERT INTO purchase_batch_finalizations(purchase_batch_id,idempotency_key,canonical_payload,committed_quantity,purchased_quantity,shortage_quantity,estimated_total_minor,actual_total_minor,finalized_by_user_id)VALUES('pb','final-key','{}',10,6,4,1000,600,'user-1'),('pb0','final0-key','{}',10,0,10,1000,0,'user-1');INSERT INTO purchase_group_results(group_buy_batch_id,purchase_batch_id,committed_quantity_snapshot,purchased_quantity,shortage_quantity,actual_unit_price_minor,estimated_subtotal_minor,actual_subtotal_minor)VALUES('group1','pb',10,6,4,100,1000,600),('group0','pb0',10,0,10,100,1000,0);INSERT INTO purchase_allocations(batch_commitment_id,purchase_batch_id,group_buy_batch_id,order_item_id,committed_quantity_snapshot,fulfilled_quantity,shortage_quantity,final_amount_minor)VALUES('commit','pb','group1','item',10,6,4,600),('zero-commit','pb0','group0','zero-item',10,0,10,0)");
+  const payment = database.prepare("INSERT INTO cash_payments(order_id,community_id,amount_minor,method,status,confirmed_by_user_id)VALUES(?,?,?,?,?,?)");
+  assert.throws(() => payment.run('o','B',100,'cash','paid','user-1'), /PAYMENT_ORDER_COMMUNITY_INVALID/);
+  assert.throws(() => payment.run('o','A',0,'cash','paid','user-1'), /PAYMENT_AMOUNT_MISMATCH|CHECK/);
+  assert.throws(() => payment.run('o','A',600,'card','paid','user-1'), /CHECK/);
+  assert.throws(() => payment.run('o','A',1,'cash','paid','user-1'), /PAYMENT_AMOUNT_MISMATCH/);
+  assert.throws(() => payment.run('pending','A',1000,'cash','paid','user-1'), /PAYMENT_PROCUREMENT_NOT_FINALIZED/);
+  assert.throws(() => payment.run('zero','A',1,'cash','paid','user-1'), /NO_PICKUP_REQUIRED/);
+  assert.throws(() => database.prepare("INSERT INTO pickup_records(id,order_id,community_id,status,picked_up_at,handed_over_by_user_id)VALUES('direct-unpaid','o','A','picked_up',CURRENT_TIMESTAMP,'user-1')").run(), /PAYMENT_REQUIRED_BEFORE_HANDOVER/);
+  payment.run('o','A',600,'cash','paid','user-1');
+  assert.throws(() => payment.run('o','A',600,'cash','paid','user-1'), /UNIQUE/);
+  assert.throws(() => database.prepare("UPDATE cash_payments SET amount_minor=1 WHERE order_id='o'").run(), /CASH_PAYMENT_IMMUTABLE/);
+  assert.throws(() => database.prepare("INSERT INTO pickup_records(id,order_id,community_id,status)VALUES('bad','o','B','ready')").run(), /PICKUP_ORDER_COMMUNITY_INVALID/);
+  assert.throws(() => database.prepare("INSERT INTO pickup_records(id,order_id,community_id,status,picked_up_at)VALUES('direct-no-actor','o','A','picked_up',CURRENT_TIMESTAMP)").run(), /HANDOVER_ACTOR_TIME_REQUIRED/);
+  assert.throws(() => database.prepare("INSERT INTO pickup_records(id,order_id,community_id,status,handed_over_by_user_id)VALUES('direct-no-time','o','A','picked_up','user-1')").run(), /HANDOVER_ACTOR_TIME_REQUIRED/);
+  database.prepare("INSERT INTO pickup_records(id,order_id,community_id,status)VALUES('pending-pickup','pending','A','ready')").run();
+  assert.throws(() => database.prepare("UPDATE pickup_records SET status='picked_up',picked_up_at=CURRENT_TIMESTAMP,handed_over_by_user_id='user-1' WHERE id='pending-pickup'").run(), /PAYMENT_REQUIRED_BEFORE_HANDOVER/);
+  database.prepare("INSERT INTO pickup_records(id,order_id,community_id,status,pickup_location_snapshot,pickup_window_snapshot)VALUES('p','o','A','ready','A社區','週六')").run();
+  assert.throws(() => database.prepare("UPDATE pickup_records SET status='picked_up',picked_up_at=CURRENT_TIMESTAMP WHERE id='p'").run(), /HANDOVER_ACTOR_TIME_REQUIRED/);
+  database.prepare("UPDATE pickup_records SET status='picked_up',picked_up_at=CURRENT_TIMESTAMP,handed_over_by_user_id='user-1' WHERE id='p'").run();
+  assert.throws(() => database.prepare("UPDATE pickup_records SET status='ready' WHERE id='p'").run(), /HANDOVER_IMMUTABLE/);
+  assert.throws(() => database.prepare("UPDATE pickup_records SET handed_over_by_user_id='user-1' WHERE id='p'").run(), /HANDOVER_IMMUTABLE/);
   assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
   database.close();
 });

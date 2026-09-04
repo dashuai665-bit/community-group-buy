@@ -1,0 +1,6 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { setupFulfillment } from '../helpers/fulfillment-fixture.mjs';
+
+test('fulfillment reconciliation validates amount and completed facts',async()=>{const c=await setupFulfillment();try{await c.service.confirmPayment('a','A','O1');await c.service.confirmHandover('a','A','O1');assert.equal((await c.repositories.reconciliation.inspectFulfillment('O1')).ok,true);c.db.exec('DROP TRIGGER cash_payments_immutable_update');c.db.database.prepare("UPDATE cash_payments SET amount_minor=1 WHERE order_id='O1'").run();const report=await c.repositories.reconciliation.inspectFulfillment('O1');assert.equal(report.ok,false);assert.equal(report.paymentDrift.length,1);}finally{c.db.close();}});
+test('fulfillment reconciliation rejects zero-fulfillment payment',async()=>{const c=await setupFulfillment();try{c.db.exec('DROP TRIGGER cash_payments_validate_procurement');c.db.database.prepare("INSERT INTO cash_payments(order_id,community_id,amount_minor,confirmed_by_user_id)VALUES('O0','A',1,'a')").run();const report=await c.repositories.reconciliation.inspectFulfillment('O0');assert.equal(report.ok,false);assert.equal(report.zeroFulfillmentDrift.length,1);}finally{c.db.close();}});

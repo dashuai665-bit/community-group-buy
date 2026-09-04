@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Repositories } from '../../server/repositories/index.ts';
 import { PurchaseBatchService } from '../../server/services/purchase-batches.ts';
+import { PickupService } from '../../server/services/orders.ts';
 import { createPhase4BDatabase, seed } from '../helpers/sqlite-database.mjs';
 
 async function setup() {
@@ -138,6 +139,21 @@ test('31 split with second grouping purchased zero ends fulfilled 30 shortage 1'
     const row = (await c.repositories.purchaseBatches.procurementForOrder('O'))[0];
     assert.equal(row.fulfilled_quantity, 30);
     assert.equal(row.shortage_quantity, 1);
+  } finally { c.db.close(); }
+});
+
+test('31 split blocks payment until both groups finalize then sums actual prices', async () => {
+  const c = await setupSplit();
+  try {
+    const first = await purchasing(c, ['G1'], 'create-key-01');
+    await c.service.finalize('a', 'A', first, input(30, 'final-key-01'));
+    const fulfillment = new PickupService(c.repositories);
+    await assert.rejects(fulfillment.confirmPayment('a', 'A', 'O'), ({ code }) => code === 'PROCUREMENT_NOT_FINALIZED');
+    const second = await purchasing(c, ['G2'], 'create-key-02');
+    await c.service.finalize('a', 'A', second, { idempotencyKey: 'final-key-02', receiptId: null, results: [{ groupingId: 'G2', purchasedQuantity: 1, actualUnitPriceMinor: 110 }] });
+    assert.throws(() => c.db.database.prepare("INSERT INTO cash_payments(order_id,community_id,amount_minor,confirmed_by_user_id)VALUES('O','A',3100,'a')").run(), /PAYMENT_AMOUNT_MISMATCH/);
+    const result = await fulfillment.confirmPayment('a', 'A', 'O');
+    assert.equal(result.finalPayableMinor, 3110);
   } finally { c.db.close(); }
 });
 

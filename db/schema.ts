@@ -321,9 +321,28 @@ export const pickupRecords = sqliteTable('pickup_records', {
   scheduledAt: text('scheduled_at'),
   readyAt: text('ready_at'),
   pickedUpAt: text('picked_up_at'),
+  pickupLocationSnapshot: text('pickup_location_snapshot'),
+  pickupWindowSnapshot: text('pickup_window_snapshot'),
+  handedOverByUserId: text('handed_over_by_user_id').references(() => users.id, { onDelete: 'restrict' }),
   ...timestamps,
 }, (table) => [
   uniqueIndex('pickup_records_order_unique').on(table.orderId),
   index('pickup_records_community_status_idx').on(table.communityId, table.status),
   check('pickup_records_status_check', sql`${table.status} IN ('pending', 'ready', 'picked_up', 'cancelled')`),
+]);
+
+export const cashPayments = sqliteTable('cash_payments', {
+  orderId: text('order_id').primaryKey().references(() => orders.id, { onDelete: 'restrict' }),
+  communityId: text('community_id').notNull().references(() => communities.id, { onDelete: 'restrict' }),
+  amountMinor: integer('amount_minor').notNull(),
+  method: text('method').notNull().default('cash'),
+  status: text('status').notNull().default('paid'),
+  confirmedByUserId: text('confirmed_by_user_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  confirmedAt: text('confirmed_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index('cash_payments_community_status_idx').on(table.communityId, table.status),
+  check('cash_payments_amount_check', sql`${table.amountMinor} > 0`),
+  check('cash_payments_method_check', sql`${table.method} = 'cash'`),
+  check('cash_payments_status_check', sql`${table.status} = 'paid'`),
 ]);

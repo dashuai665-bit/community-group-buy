@@ -120,6 +120,21 @@ export interface PickupRow {
   scheduled_at: string | null;
   ready_at: string | null;
   picked_up_at: string | null;
+  pickup_location_snapshot: string | null;
+  pickup_window_snapshot: string | null;
+  handed_over_by_user_id: string | null;
+}
+export interface FulfillmentRow extends OrderRow {
+  display_name: string | null;
+  ordered_quantity: number;
+  finalized_quantity: number;
+  fulfilled_quantity: number;
+  shortage_quantity: number;
+  final_payable_minor: number;
+  payment_status: 'paid' | null;
+  payment_amount_minor: number | null;
+  confirmed_at: string | null;
+  pickup_status: string | null;
 }
 export interface PurchaseBatchRow {
   id: string;
@@ -879,6 +894,101 @@ export class PickupRepository extends RepositoryBase {
       communityId,
     );
   }
+  private fulfillmentQuery(where: string, value: string) {
+    return this.statement(
+      `SELECT o.*,up.display_name,
+       COALESCE(SUM(oi.quantity),0) AS ordered_quantity,
+       COALESCE(SUM(x.finalized_quantity),0) AS finalized_quantity,
+       COALESCE(SUM(x.fulfilled_quantity),0) AS fulfilled_quantity,
+       COALESCE(SUM(x.shortage_quantity),0) AS shortage_quantity,
+       COALESCE(SUM(x.final_payable_minor),0) AS final_payable_minor,
+       cp.status AS payment_status,cp.amount_minor AS payment_amount_minor,cp.confirmed_at,
+       pr.status AS pickup_status
+       FROM orders o JOIN user_profiles up ON up.user_id=o.user_id
+       JOIN order_items oi ON oi.order_id=o.id
+       LEFT JOIN (
+         SELECT order_item_id,SUM(committed_quantity_snapshot) AS finalized_quantity,
+          SUM(fulfilled_quantity) AS fulfilled_quantity,SUM(shortage_quantity) AS shortage_quantity,
+          SUM(final_amount_minor) AS final_payable_minor
+         FROM purchase_allocations GROUP BY order_item_id
+       ) x ON x.order_item_id=oi.id
+       LEFT JOIN cash_payments cp ON cp.order_id=o.id
+       LEFT JOIN pickup_records pr ON pr.order_id=o.id
+       WHERE ${where} AND o.status<>'cancelled'
+       GROUP BY o.id,up.user_id,cp.order_id,pr.order_id`,
+      value,
+    );
+  }
+  findFulfillment(orderId: string) {
+    return this.fulfillmentQuery('o.id=?', orderId).first<FulfillmentRow>();
+  }
+  async listFulfillments(communityId: string) {
+    return (
+      (await this.fulfillmentQuery('o.community_id=?', communityId).all<FulfillmentRow>()).results ?? []
+    );
+  }
+  async listFulfillmentItems(orderId: string) {
+    return (
+      (
+        await this.statement(
+          `SELECT oi.id,oi.product_name_snapshot,oi.unit_label_snapshot,oi.quantity AS ordered_quantity,
+           COALESCE(SUM(pa.committed_quantity_snapshot),0) AS finalized_quantity,
+           COALESCE(SUM(pa.fulfilled_quantity),0) AS fulfilled_quantity,
+           COALESCE(SUM(pa.shortage_quantity),0) AS shortage_quantity,
+           COALESCE(SUM(pa.final_amount_minor),0) AS final_payable_minor
+           FROM order_items oi LEFT JOIN purchase_allocations pa ON pa.order_item_id=oi.id
+           WHERE oi.order_id=? GROUP BY oi.id ORDER BY oi.created_at,oi.id`,
+          orderId,
+        ).all<Record<string, unknown>>()
+      ).results ?? []
+    );
+  }
+  paymentStatement(orderId: string, communityId: string, amountMinor: number, actorUserId: string) {
+    return this.statement(
+      "INSERT OR IGNORE INTO cash_payments(order_id,community_id,amount_minor,method,status,confirmed_by_user_id) VALUES(?,? ,?,'cash','paid',?)",
+      orderId, communityId, amountMinor, actorUserId,
+    );
+  }
+  paymentAuditStatement(id: string, actorUserId: string, communityId: string, orderId: string, amountMinor: number) {
+    return this.statement(
+      `INSERT INTO audit_logs(id,actor_user_id,community_id,action_type,target_type,target_id,metadata)
+       SELECT ?,?,?,'pickup_ready','order',?,? WHERE changes()=1`,
+      id, actorUserId, communityId, orderId,
+      JSON.stringify({ event: 'CASH_PAYMENT_CONFIRMED', orderId, communityId, actor: actorUserId, amountMinor, previousState: 'unpaid', newState: 'paid' }),
+    );
+  }
+  prepareStatement(id: string, orderId: string, communityId: string, location: string, window: string) {
+    return this.statement(
+      "INSERT OR IGNORE INTO pickup_records(id,order_id,community_id,status,ready_at,pickup_location_snapshot,pickup_window_snapshot) VALUES(?,?,?,'ready',CURRENT_TIMESTAMP,?,?)",
+      id, orderId, communityId, location, window,
+    );
+  }
+  handoverStatement(orderId: string, actorUserId: string) {
+    return this.statement(
+      "UPDATE pickup_records SET status='picked_up',picked_up_at=CURRENT_TIMESTAMP,handed_over_by_user_id=?,updated_at=CURRENT_TIMESTAMP WHERE order_id=? AND status='ready' AND EXISTS(SELECT 1 FROM cash_payments WHERE order_id=? AND status='paid')",
+      actorUserId, orderId, orderId,
+    );
+  }
+  handoverAuditStatement(id: string, actorUserId: string, communityId: string, orderId: string) {
+    return this.statement(
+      `INSERT INTO audit_logs(id,actor_user_id,community_id,action_type,target_type,target_id,metadata)
+       SELECT ?,?,?,'pickup_completed','order',?,? WHERE changes()=1`,
+      id, actorUserId, communityId, orderId,
+      JSON.stringify({ event: 'ORDER_HANDED_OVER', orderId, communityId, actor: actorUserId, previousState: 'pending', newState: 'handed_over' }),
+    );
+  }
+  fulfillmentOrderReadyStatement(orderId: string) {
+    return this.statement(
+      "UPDATE orders SET status='ready_for_pickup',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='formed'",
+      orderId,
+    );
+  }
+  fulfillmentOrderCompleteStatement(orderId: string) {
+    return this.statement(
+      "UPDATE orders SET status='completed',completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='ready_for_pickup' AND EXISTS(SELECT 1 FROM cash_payments WHERE order_id=? AND status='paid') AND EXISTS(SELECT 1 FROM pickup_records WHERE order_id=? AND status='picked_up')",
+      orderId, orderId, orderId,
+    );
+  }
   readyStatement(orderId: string) {
     return this.statement(
       "UPDATE pickup_records SET status='ready',ready_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE order_id=? AND status='pending'",
@@ -1008,6 +1118,47 @@ export class ReconciliationRepository extends RepositoryBase {
       totalDrift,
       payableDrift,
       relationalDrift,
+    };
+  }
+  async inspectFulfillment(orderId: string) {
+    const paymentDrift =
+      (
+        await this.statement(
+          `SELECT cp.order_id FROM cash_payments cp
+           WHERE cp.order_id=? AND cp.amount_minor<>(SELECT COALESCE(SUM(final_amount_minor),0) FROM purchase_allocations pa JOIN order_items oi ON oi.id=pa.order_item_id WHERE oi.order_id=cp.order_id)`,
+          orderId,
+        ).all()
+      ).results ?? [];
+    const handoverDrift =
+      (
+        await this.statement(
+          `SELECT pr.order_id FROM pickup_records pr LEFT JOIN cash_payments cp ON cp.order_id=pr.order_id
+           WHERE pr.order_id=? AND pr.status='picked_up' AND (pr.handed_over_by_user_id IS NULL OR pr.picked_up_at IS NULL OR cp.status<>'paid' OR cp.status IS NULL)`,
+          orderId,
+        ).all()
+      ).results ?? [];
+    const zeroFulfillmentDrift =
+      (
+        await this.statement(
+          `SELECT o.id FROM orders o JOIN cash_payments cp ON cp.order_id=o.id
+           WHERE o.id=? AND (SELECT COALESCE(SUM(pa.fulfilled_quantity),0) FROM purchase_allocations pa JOIN order_items oi ON oi.id=pa.order_item_id WHERE oi.order_id=o.id)=0`,
+          orderId,
+        ).all()
+      ).results ?? [];
+    const completionDrift =
+      (
+        await this.statement(
+          `SELECT o.id FROM orders o LEFT JOIN cash_payments cp ON cp.order_id=o.id LEFT JOIN pickup_records pr ON pr.order_id=o.id
+           WHERE o.id=? AND o.status='completed' AND (cp.status<>'paid' OR cp.status IS NULL OR pr.status<>'picked_up' OR pr.status IS NULL)`,
+          orderId,
+        ).all()
+      ).results ?? [];
+    return {
+      ok: paymentDrift.length === 0 && handoverDrift.length === 0 && zeroFulfillmentDrift.length === 0 && completionDrift.length === 0,
+      paymentDrift,
+      handoverDrift,
+      zeroFulfillmentDrift,
+      completionDrift,
     };
   }
 }
