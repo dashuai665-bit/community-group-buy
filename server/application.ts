@@ -20,6 +20,7 @@ import {
 import { OrderService, PickupService } from './services/orders.ts';
 import { AdminOperationsService } from './services/admin-operations.ts';
 import { GroupingService } from './services/groupings.ts';
+import { PurchaseBatchService } from './services/purchase-batches.ts';
 
 export interface AuthenticationAdapter {
   authenticate(request: Request): Promise<AuthenticatedProviderIdentity | null>;
@@ -50,6 +51,18 @@ async function readObject(request: Request): Promise<Record<string, unknown>> {
     return body as Record<string, unknown>;
   } catch {
     throw new ApiError(422, 'VALIDATION_ERROR', '請提供有效的 JSON object');
+  }
+}
+
+async function readPurchaseBatchObject(
+  request: Request,
+): Promise<Record<string, unknown>> {
+  try {
+    const body: unknown = await request.json();
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error();
+    return body as Record<string, unknown>;
+  } catch {
+    throw new ApiError(400, 'VALIDATION_ERROR', '請提供有效的 JSON object');
   }
 }
 
@@ -102,6 +115,7 @@ export function createApplication(
   const pickups = new PickupService(repositories);
   const operations = new AdminOperationsService(repositories);
   const groupings = new GroupingService(repositories);
+  const purchaseBatches = new PurchaseBatchService(repositories);
 
   async function appUser(request: Request): Promise<string | null> {
     const identity = await authentication.authenticate(request);
@@ -184,6 +198,53 @@ export function createApplication(
           ),
         });
       }
+      const purchaseBatchMatch = path.match(
+        /^\/api\/admin\/communities\/([^/]+)\/purchase-batches(?:\/([^/]+))?(?:\/(start))?$/,
+      );
+      if (purchaseBatchMatch && request.method === 'GET' && !purchaseBatchMatch[2])
+        return Response.json(
+          await purchaseBatches.list(
+            await appUser(request),
+            validateId(purchaseBatchMatch[1], 'communityId'),
+          ),
+        );
+      if (purchaseBatchMatch && request.method === 'GET' && purchaseBatchMatch[2] && !purchaseBatchMatch[3])
+        return Response.json({
+          purchaseBatch: await purchaseBatches.get(
+            await appUser(request),
+            validateId(purchaseBatchMatch[1], 'communityId'),
+            validateId(purchaseBatchMatch[2], 'purchaseBatchId'),
+          ),
+        });
+      if (purchaseBatchMatch && request.method === 'POST' && !purchaseBatchMatch[2]) {
+        const body = await readPurchaseBatchObject(request);
+        if (!Array.isArray(body.groupingIds))
+          throw new ApiError(400, 'VALIDATION_ERROR', 'groupingIds 格式不正確');
+        const key = typeof body.idempotencyKey === 'string' ? body.idempotencyKey : '';
+        if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(key))
+          throw new ApiError(400, 'VALIDATION_ERROR', 'idempotencyKey 格式不正確');
+        const groupingIds = body.groupingIds.map((id) => {
+          try {
+            return validateId(id, 'groupingId');
+          } catch {
+            throw new ApiError(400, 'VALIDATION_ERROR', 'groupingId 格式不正確');
+          }
+        });
+        const result = await purchaseBatches.create(
+          await appUser(request),
+          validateId(purchaseBatchMatch[1], 'communityId'),
+          { groupingIds, idempotencyKey: key },
+        );
+        return Response.json(result, { status: result.created ? 201 : 200 });
+      }
+      if (purchaseBatchMatch && request.method === 'POST' && purchaseBatchMatch[2] && purchaseBatchMatch[3])
+        return Response.json({
+          purchaseBatch: await purchaseBatches.start(
+            await appUser(request),
+            validateId(purchaseBatchMatch[1], 'communityId'),
+            validateId(purchaseBatchMatch[2], 'purchaseBatchId'),
+          ),
+        });
       if (request.method === 'GET' && path === '/api/me/communities') {
         const userId = await appUser(request);
         const actor = await requireActiveUser(repositories, userId);

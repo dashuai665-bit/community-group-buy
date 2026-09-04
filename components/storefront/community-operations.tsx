@@ -35,18 +35,109 @@ type Grouping = {
   currency: string;
   oldest_order_time: string | null;
 };
+type PurchaseBatch = {
+  id: string;
+  status: 'ready' | 'purchasing';
+  group_count: number;
+  total_quantity: number;
+  estimated_total_minor: number;
+  created_at: string;
+  purchasing_started_at: string | null;
+};
+type PurchaseOperations = {
+  eligibleGroups: Grouping[];
+  purchaseBatches: PurchaseBatch[];
+};
+type PurchaseBatchDetail = PurchaseBatch & {
+  created_by_name: string | null;
+  purchasing_started_by_name: string | null;
+  groups: Grouping[];
+  groupCount: number;
+  totalQuantity: number;
+  estimatedTotalMinor: number;
+};
 export function CommunityOperations({ communityId }: { communityId: string }) {
   const [data, setData] = useState<{
       summary: Summary;
       orders: Order[];
       wishes: Wish[];
       groupings: Grouping[];
+      purchases: PurchaseOperations;
     } | null>(null),
     [error, setError] = useState(''),
     [formationReason, setFormationReason] = useState<Record<string, string>>(
       {},
     ),
-    [forming, setForming] = useState('');
+    [forming, setForming] = useState(''),
+    [selectedGroups, setSelectedGroups] = useState<string[]>([]),
+    [purchaseAction, setPurchaseAction] = useState(''),
+    [purchaseMessage, setPurchaseMessage] = useState(''),
+    [purchaseDetail, setPurchaseDetail] = useState<PurchaseBatchDetail | null>(
+      null,
+    );
+  async function showPurchaseBatch(id: string) {
+    setPurchaseAction(`detail-${id}`);
+    try {
+      const result = await api<{ purchaseBatch: PurchaseBatchDetail }>(
+        `/api/admin/communities/${communityId}/purchase-batches/${id}`,
+      );
+      setPurchaseDetail(result.purchaseBatch);
+    } catch (cause) {
+      setPurchaseMessage(
+        cause instanceof Error ? cause.message : '載入採購批次失敗',
+      );
+    } finally {
+      setPurchaseAction('');
+    }
+  }
+  async function reloadPurchases() {
+    const purchases = await api<PurchaseOperations>(
+      `/api/admin/communities/${communityId}/purchase-batches`,
+    );
+    setData((current) => (current ? { ...current, purchases } : current));
+  }
+  async function createPurchaseBatch() {
+    if (!selectedGroups.length)
+      return setPurchaseMessage('請先選擇至少一個已成團集單。');
+    setPurchaseAction('creating');
+    setPurchaseMessage('');
+    try {
+      await api(`/api/admin/communities/${communityId}/purchase-batches`, {
+        method: 'POST',
+        body: JSON.stringify({
+          groupingIds: selectedGroups,
+          idempotencyKey: `purchase-${crypto.randomUUID()}`,
+        }),
+      });
+      setSelectedGroups([]);
+      setPurchaseMessage('採購批次已建立。');
+      await reloadPurchases();
+    } catch (cause) {
+      setPurchaseMessage(
+        cause instanceof Error ? cause.message : '建立採購批次失敗',
+      );
+    } finally {
+      setPurchaseAction('');
+    }
+  }
+  async function startPurchasing(id: string) {
+    setPurchaseAction(id);
+    setPurchaseMessage('');
+    try {
+      await api(
+        `/api/admin/communities/${communityId}/purchase-batches/${id}/start`,
+        { method: 'POST' },
+      );
+      setPurchaseMessage('已開始採購。');
+      await reloadPurchases();
+    } catch (cause) {
+      setPurchaseMessage(
+        cause instanceof Error ? cause.message : '無法開始採購',
+      );
+    } finally {
+      setPurchaseAction('');
+    }
+  }
   async function formGrouping(grouping: Grouping) {
     const reason = formationReason[grouping.id]?.trim();
     if (!reason) return setError('請填寫手動成團原因。');
@@ -82,13 +173,17 @@ export function CommunityOperations({ communityId }: { communityId: string }) {
       api<{ groupings: Grouping[] }>(
         `/api/admin/communities/${communityId}/groupings`,
       ),
+      api<PurchaseOperations>(
+        `/api/admin/communities/${communityId}/purchase-batches`,
+      ),
     ])
-      .then(([summary, orders, wishes, groupings]) =>
+      .then(([summary, orders, wishes, groupings, purchases]) =>
         setData({
           summary,
           orders: orders.orders,
           wishes: wishes.wishes,
           groupings: groupings.groupings,
+          purchases,
         }),
       )
       .catch((e) =>
@@ -198,6 +293,117 @@ export function CommunityOperations({ communityId }: { communityId: string }) {
             ))}
           </div>
         )}
+      </section>
+      <section className="ops-card">
+        <h2>待建立採購批次</h2>
+        {!data.purchases.eligibleGroups.length ? (
+          <EmptyState
+            title="目前沒有待採購集單"
+            description="新的已成團集單會顯示在這裡。"
+          />
+        ) : (
+          <div className="purchase-selection">
+            {data.purchases.eligibleGroups.map((group) => (
+              <label key={group.id}>
+                <input
+                  type="checkbox"
+                  checked={selectedGroups.includes(group.id)}
+                  onChange={(event) =>
+                    setSelectedGroups((current) =>
+                      event.target.checked
+                        ? [...current, group.id]
+                        : current.filter((id) => id !== group.id),
+                    )
+                  }
+                />
+                <span>
+                  <strong>{group.product_name}</strong>
+                  <small>
+                    {group.committed_quantity} {group.unit_label} ·{' '}
+                    {formatMoney(group.estimated_amount_minor, group.currency)}
+                  </small>
+                </span>
+              </label>
+            ))}
+            <button
+              type="button"
+              disabled={purchaseAction === 'creating'}
+              onClick={createPurchaseBatch}
+            >
+              {purchaseAction === 'creating'
+                ? '建立中…'
+                : `建立採購批次（${selectedGroups.length}）`}
+            </button>
+          </div>
+        )}
+        {purchaseMessage ? (
+          <p className="form-message">{purchaseMessage}</p>
+        ) : null}
+      </section>
+      <section className="ops-card">
+        <h2>採購批次</h2>
+        {!data.purchases.purchaseBatches.length ? (
+          <EmptyState
+            title="尚無採購批次"
+            description="選擇已成團集單後建立。"
+          />
+        ) : (
+          <div className="admin-order-list">
+            {data.purchases.purchaseBatches.map((batch) => (
+              <article key={batch.id}>
+                <div>
+                  <span className="status-pill">
+                    {batch.status === 'ready' ? '待採購' : '採購中'}
+                  </span>
+                  <h3>{batch.id}</h3>
+                  <p>
+                    {batch.group_count} 團 · {batch.total_quantity} 件 ·{' '}
+                    {batch.created_at}
+                  </p>
+                  {batch.status === 'ready' ? (
+                    <button
+                      type="button"
+                      disabled={purchaseAction === batch.id}
+                      onClick={() => startPurchasing(batch.id)}
+                    >
+                      {purchaseAction === batch.id ? '開始中…' : '開始採購'}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => showPurchaseBatch(batch.id)}
+                  >
+                    {purchaseAction === `detail-${batch.id}`
+                      ? '載入中…'
+                      : '查看明細'}
+                  </button>
+                </div>
+                <strong>
+                  {formatMoney(batch.estimated_total_minor, 'TWD')}
+                </strong>
+              </article>
+            ))}
+          </div>
+        )}
+        {purchaseDetail ? (
+          <div className="purchase-detail">
+            <h3>採購批次明細</h3>
+            <p>
+              由 {purchaseDetail.created_by_name ?? '管理員'} 建立 ·{' '}
+              {purchaseDetail.groupCount} 團 · {purchaseDetail.totalQuantity} 件
+            </p>
+            {purchaseDetail.groups.map((group) => (
+              <p key={group.id}>
+                <strong>{group.product_name}</strong> ·{' '}
+                {group.committed_quantity} {group.unit_label} ·{' '}
+                {formatMoney(group.estimated_amount_minor, group.currency)}
+              </p>
+            ))}
+            <strong>
+              預估合計 {formatMoney(purchaseDetail.estimatedTotalMinor, 'TWD')}
+            </strong>
+          </div>
+        ) : null}
       </section>
       <section className="ops-card">
         <h2>社區基本資訊</h2>

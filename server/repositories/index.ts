@@ -121,6 +121,17 @@ export interface PickupRow {
   ready_at: string | null;
   picked_up_at: string | null;
 }
+export interface PurchaseBatchRow {
+  id: string;
+  community_id: string;
+  status: 'ready' | 'purchasing';
+  idempotency_key: string;
+  created_by_user_id: string;
+  purchasing_started_by_user_id: string | null;
+  purchasing_started_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
 
 class RepositoryBase {
   protected readonly context: RepositoryContext;
@@ -981,6 +992,141 @@ export interface OperationsSummaryRow {
   pending_pickup: number;
   unfinished_orders: number;
 }
+export class PurchaseBatchRepository extends RepositoryBase {
+  findById(communityId: string, id: string) {
+    return this.statement(
+      `SELECT p.*,creator.display_name AS created_by_name,starter.display_name AS purchasing_started_by_name
+       FROM purchase_batches p
+       LEFT JOIN user_profiles creator ON creator.user_id=p.created_by_user_id
+       LEFT JOIN user_profiles starter ON starter.user_id=p.purchasing_started_by_user_id
+       WHERE p.community_id=? AND p.id=?`,
+      communityId,
+      id,
+    ).first<PurchaseBatchRow & Record<string, unknown>>();
+  }
+  findByIdempotency(communityId: string, key: string) {
+    return this.statement(
+      'SELECT * FROM purchase_batches WHERE community_id=? AND idempotency_key=?',
+      communityId,
+      key,
+    ).first<PurchaseBatchRow>();
+  }
+  async listForCommunity(communityId: string) {
+    return (
+      (
+        await this.statement(
+          `SELECT p.*,COUNT(pg.group_buy_batch_id) AS group_count,
+           COALESCE(SUM(g.committed_quantity),0) AS total_quantity,
+           COALESCE(SUM((SELECT SUM(bc.quantity*oi.unit_price_minor) FROM batch_commitments bc JOIN order_items oi ON oi.id=bc.order_item_id WHERE bc.batch_id=g.id AND bc.status='active')),0) AS estimated_total_minor
+           FROM purchase_batches p
+           LEFT JOIN purchase_batch_groups pg ON pg.purchase_batch_id=p.id
+           LEFT JOIN group_buy_batches g ON g.id=pg.group_buy_batch_id
+           WHERE p.community_id=? GROUP BY p.id ORDER BY p.created_at DESC,p.id DESC`,
+          communityId,
+        ).all<Record<string, unknown>>()
+      ).results ?? []
+    );
+  }
+  async listGroups(purchaseBatchId: string) {
+    return (
+      (
+        await this.statement(
+          `SELECT g.id,g.sequence_number,g.status,g.threshold_quantity,g.committed_quantity,g.formed_at,
+           o.id AS offering_id,o.currency,p.name AS product_name,p.unit_label,
+           COALESCE(SUM(CASE WHEN bc.status='active' THEN bc.quantity*oi.unit_price_minor ELSE 0 END),0) AS estimated_amount_minor
+           FROM purchase_batch_groups pg JOIN group_buy_batches g ON g.id=pg.group_buy_batch_id
+           JOIN community_product_offerings o ON o.id=g.offering_id JOIN products p ON p.id=o.product_id
+           LEFT JOIN batch_commitments bc ON bc.batch_id=g.id LEFT JOIN order_items oi ON oi.id=bc.order_item_id
+           WHERE pg.purchase_batch_id=? GROUP BY g.id,o.id,o.currency,p.name,p.unit_label ORDER BY pg.created_at,g.id`,
+          purchaseBatchId,
+        ).all<Record<string, unknown>>()
+      ).results ?? []
+    );
+  }
+  async listEligibleGroups(communityId: string) {
+    return (
+      (
+        await this.statement(
+          `SELECT g.id,g.sequence_number,g.status,g.threshold_quantity,g.committed_quantity,g.formed_at,
+           o.id AS offering_id,o.currency,p.name AS product_name,p.unit_label,
+           COALESCE(SUM(CASE WHEN bc.status='active' THEN bc.quantity*oi.unit_price_minor ELSE 0 END),0) AS estimated_amount_minor
+           FROM group_buy_batches g JOIN community_product_offerings o ON o.id=g.offering_id JOIN products p ON p.id=o.product_id
+           LEFT JOIN batch_commitments bc ON bc.batch_id=g.id LEFT JOIN order_items oi ON oi.id=bc.order_item_id
+           WHERE o.community_id=? AND g.status='formed' AND NOT EXISTS (SELECT 1 FROM purchase_batch_groups pg WHERE pg.group_buy_batch_id=g.id)
+           GROUP BY g.id,o.id,o.currency,p.name,p.unit_label ORDER BY g.formed_at,g.id`,
+          communityId,
+        ).all<Record<string, unknown>>()
+      ).results ?? []
+    );
+  }
+  async findGroupings(communityId: string, ids: string[]) {
+    if (!ids.length) return [];
+    return (
+      (
+        await this.statement(
+          `SELECT g.id,g.status,o.community_id FROM group_buy_batches g JOIN community_product_offerings o ON o.id=g.offering_id WHERE o.community_id=? AND g.id IN (${ids.map(() => '?').join(',')})`,
+          communityId,
+          ...ids,
+        ).all<Record<string, unknown>>()
+      ).results ?? []
+    );
+  }
+  async assignedGroupingIds(ids: string[]) {
+    if (!ids.length) return [];
+    return (
+      (
+        await this.statement(
+          `SELECT group_buy_batch_id FROM purchase_batch_groups WHERE group_buy_batch_id IN (${ids.map(() => '?').join(',')})`,
+          ...ids,
+        ).all<{ group_buy_batch_id: string }>()
+      ).results ?? []
+    ).map((row) => row.group_buy_batch_id);
+  }
+  insertStatement(input: {
+    id: string;
+    communityId: string;
+    idempotencyKey: string;
+    actorUserId: string;
+  }) {
+    return this.statement(
+      "INSERT INTO purchase_batches(id,community_id,status,idempotency_key,created_by_user_id) VALUES (?,?, 'ready',?,?)",
+      input.id,
+      input.communityId,
+      input.idempotencyKey,
+      input.actorUserId,
+    );
+  }
+  insertGroupStatement(purchaseBatchId: string, groupingId: string) {
+    return this.statement(
+      'INSERT INTO purchase_batch_groups(purchase_batch_id,group_buy_batch_id) VALUES (?,?)',
+      purchaseBatchId,
+      groupingId,
+    );
+  }
+  startStatement(id: string, actorUserId: string) {
+    return this.statement(
+      "UPDATE purchase_batches SET status='purchasing',purchasing_started_by_user_id=?,purchasing_started_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='ready'",
+      actorUserId,
+      id,
+    );
+  }
+  startAuditStatement(input: {
+    id: string;
+    purchaseBatchId: string;
+    communityId: string;
+    actorUserId: string;
+  }) {
+    return this.statement(
+      `INSERT INTO audit_logs(id,actor_user_id,community_id,action_type,target_type,target_id,metadata)
+       SELECT ?,?,?,'order_status_changed','purchase_batch',?,json_object('event','PURCHASE_BATCH_STARTED','previousStatus','ready','newStatus','purchasing') WHERE changes()=1`,
+      input.id,
+      input.actorUserId,
+      input.communityId,
+      input.purchaseBatchId,
+    );
+  }
+}
+
 export class AdminOperationsRepository extends RepositoryBase {
   private aggregate(whereClause: string, communityIds: string[] = []) {
     return this.statement(
@@ -1038,6 +1184,7 @@ export class Repositories {
   readonly pickups: PickupRepository;
   readonly reconciliation: ReconciliationRepository;
   readonly operations: AdminOperationsRepository;
+  readonly purchaseBatches: PurchaseBatchRepository;
   constructor(context: RepositoryContext) {
     this.context = context;
     this.users = new UserRepository(context);
@@ -1055,6 +1202,7 @@ export class Repositories {
     this.pickups = new PickupRepository(context);
     this.reconciliation = new ReconciliationRepository(context);
     this.operations = new AdminOperationsRepository(context);
+    this.purchaseBatches = new PurchaseBatchRepository(context);
   }
   batch(statements: SqlStatement[]) {
     return this.context.db.batch(statements);

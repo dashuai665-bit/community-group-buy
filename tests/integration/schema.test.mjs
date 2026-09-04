@@ -8,6 +8,7 @@ const migrationUrls = [
   new URL('../../drizzle/0001_sticky_taskmaster.sql', import.meta.url),
   new URL('../../drizzle/0002_magical_gamma_corps.sql', import.meta.url),
   new URL('../../drizzle/0003_bumpy_cannonball.sql', import.meta.url),
+  new URL('../../drizzle/0004_purchase_batches.sql', import.meta.url),
 ];
 
 async function createMigratedDatabase() {
@@ -34,7 +35,7 @@ test('migration 可以重複建立兩個乾淨 SQLite DB，且 foreign_key_check
     ).all();
     assert.deepEqual(
       tables.map(({ name }) => name),
-      ['audit_logs', 'batch_commitments', 'communities', 'community_members', 'community_product_offerings', 'group_buy_batches', 'order_items', 'orders', 'pickup_records', 'platform_roles', 'product_wishes', 'products', 'user_identities', 'user_profiles', 'users'],
+      ['audit_logs', 'batch_commitments', 'communities', 'community_members', 'community_product_offerings', 'group_buy_batches', 'order_items', 'orders', 'pickup_records', 'platform_roles', 'product_wishes', 'products', 'purchase_batch_groups', 'purchase_batches', 'user_identities', 'user_profiles', 'users'],
     );
     assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
     database.close();
@@ -64,6 +65,45 @@ test('Phase 4B order idempotency、item linkage、pickup 與 status constraints 
   assert.throws(()=>database.prepare("INSERT INTO order_items(id,order_id,offering_id,product_id,product_name_snapshot,unit_label_snapshot,unit_price_minor,quantity,estimated_subtotal_minor) VALUES ('i','missing','o','p','米','包',100,1,100)").run(),/FOREIGN KEY/);
   database.prepare("INSERT INTO pickup_records(id,order_id,community_id) VALUES ('pickup','order-1','A')").run();
   assert.throws(()=>database.prepare("UPDATE pickup_records SET status='unknown'").run(),/CHECK/);
+  database.close();
+});
+
+test('Phase 6C purchase batch constraints、immutable membership 與 rollback 正確', async () => {
+  const database = await createMigratedDatabase();
+  seedUserAndCommunities(database);
+  database.prepare("INSERT INTO user_profiles(user_id)VALUES('user-1')").run();
+  database.prepare("INSERT INTO products(id,name,source_type,unit_label)VALUES('p','米','manual','包')").run();
+  database.prepare("INSERT INTO community_product_offerings(id,community_id,product_id,price_minor,batch_threshold,min_quantity_per_order)VALUES('oa','A','p',100,30,1),('ob','B','p',100,30,1)").run();
+  database.prepare("INSERT INTO group_buy_batches(id,offering_id,sequence_number,status,threshold_quantity,committed_quantity)VALUES('g','oa',1,'formed',30,30),('g2','oa',2,'formed',30,30),('open','oa',3,'open',30,1),('other','ob',1,'formed',30,30)").run();
+  const insertBatch = database.prepare("INSERT INTO purchase_batches(id,community_id,idempotency_key,created_by_user_id)VALUES(?,?,?,?)");
+  insertBatch.run('pb','A','same-key','user-1');
+  assert.throws(() => insertBatch.run('duplicate','A','same-key','user-1'), /UNIQUE/);
+  assert.throws(() => database.prepare("UPDATE purchase_batches SET status='completed'").run(), /CHECK/);
+  assert.equal(database.prepare("SELECT pk FROM pragma_table_info('purchase_batch_groups') WHERE name='group_buy_batch_id'").get().pk, 1);
+  assert.equal(database.prepare("SELECT COUNT(*) count FROM pragma_foreign_key_list('purchase_batch_groups')").get().count, 2);
+
+  database.prepare("INSERT INTO purchase_batch_groups(purchase_batch_id,group_buy_batch_id)VALUES('pb','g')").run();
+  assert.equal(database.prepare("SELECT status FROM group_buy_batches WHERE id='g'").get().status, 'locked');
+  assert.throws(() => database.prepare("INSERT INTO purchase_batch_groups(purchase_batch_id,group_buy_batch_id)VALUES('pb','open')").run(), /INELIGIBLE/);
+  assert.throws(() => database.prepare("INSERT INTO purchase_batch_groups(purchase_batch_id,group_buy_batch_id)VALUES('pb','other')").run(), /INELIGIBLE/);
+  assert.throws(() => database.prepare("UPDATE purchase_batch_groups SET purchase_batch_id='other' WHERE group_buy_batch_id='g'").run(), /PURCHASE_BATCH_MEMBERSHIP_IMMUTABLE/);
+  assert.throws(() => database.prepare("DELETE FROM purchase_batch_groups WHERE group_buy_batch_id='g'").run(), /PURCHASE_BATCH_MEMBERSHIP_IMMUTABLE/);
+  assert.equal(database.prepare("SELECT purchase_batch_id FROM purchase_batch_groups WHERE group_buy_batch_id='g'").get().purchase_batch_id, 'pb');
+
+  database.exec('BEGIN');
+  try {
+    insertBatch.run('rollback','A','rollback-key','user-1');
+    database.prepare("INSERT INTO purchase_batch_groups(purchase_batch_id,group_buy_batch_id)VALUES('rollback','g2')").run();
+    database.prepare("INSERT INTO purchase_batch_groups(purchase_batch_id,group_buy_batch_id)VALUES('rollback','open')").run();
+    assert.fail('second membership must be rejected');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    assert.match(String(error), /INELIGIBLE/);
+  }
+  assert.equal(database.prepare("SELECT COUNT(*) count FROM purchase_batches WHERE id='rollback'").get().count, 0);
+  assert.equal(database.prepare("SELECT COUNT(*) count FROM purchase_batch_groups WHERE group_buy_batch_id='g2'").get().count, 0);
+  assert.equal(database.prepare("SELECT status FROM group_buy_batches WHERE id='g2'").get().status, 'formed');
+  assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
   database.close();
 });
 

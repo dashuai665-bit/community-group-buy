@@ -242,6 +242,29 @@ export const batchCommitments = sqliteTable('batch_commitments', {
   check('batch_commitments_order_item_check', sql`(${table.sourceType} = 'order_item' AND ${table.orderItemId} IS NOT NULL) OR (${table.sourceType} = 'reservation' AND ${table.orderItemId} IS NULL)`),
 ]);
 
+export const purchaseBatches = sqliteTable('purchase_batches', {
+  id: text('id').primaryKey(),
+  communityId: text('community_id').notNull().references(() => communities.id, { onDelete: 'restrict' }),
+  status: text('status').notNull().default('ready'),
+  idempotencyKey: text('idempotency_key').notNull(),
+  createdByUserId: text('created_by_user_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  purchasingStartedByUserId: text('purchasing_started_by_user_id').references(() => users.id, { onDelete: 'restrict' }),
+  purchasingStartedAt: text('purchasing_started_at'),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex('purchase_batches_community_idempotency_unique').on(table.communityId, table.idempotencyKey),
+  index('purchase_batches_community_status_idx').on(table.communityId, table.status),
+  check('purchase_batches_status_check', sql`${table.status} IN ('ready', 'purchasing')`),
+]);
+
+export const purchaseBatchGroups = sqliteTable('purchase_batch_groups', {
+  purchaseBatchId: text('purchase_batch_id').notNull().references(() => purchaseBatches.id, { onDelete: 'restrict' }),
+  groupBuyBatchId: text('group_buy_batch_id').primaryKey().references(() => groupBuyBatches.id, { onDelete: 'restrict' }),
+  createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index('purchase_batch_groups_purchase_batch_idx').on(table.purchaseBatchId),
+]);
+
 export const pickupRecords = sqliteTable('pickup_records', {
   id: text('id').primaryKey(),
   orderId: text('order_id').notNull().references(() => orders.id, { onDelete: 'restrict' }),
