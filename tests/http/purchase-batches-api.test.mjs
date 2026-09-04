@@ -38,6 +38,19 @@ const createBody = (groups = ['G1'], key = 'purchase-key-01') => ({
   status: 'purchasing',
 });
 
+async function preparePurchasing(c, user = 'aa') {
+  const made = await c.call('POST', '/api/admin/communities/A/purchase-batches', user, createBody());
+  const id = made.json.purchaseBatch.id;
+  await c.call('POST', `/api/admin/communities/A/purchase-batches/${id}/start`, user, {});
+  return id;
+}
+
+const finalizeBody = (purchasedQuantity = 30, key = 'finalize-key-01') => ({
+  idempotencyKey: key,
+  receiptId: null,
+  results: [{ groupingId: 'G1', purchasedQuantity, actualUnitPriceMinor: 125 }],
+});
+
 const cases = [
   [
     'platform admin and own community admin can list',
@@ -438,6 +451,117 @@ const cases = [
         ),
         false,
       );
+    },
+  ],
+  [
+    'platform and own community admin can finalize while other admin and resident cannot',
+    async (c) => {
+      const id = await preparePurchasing(c, 'pa');
+      assert.equal((await c.call('POST', `/api/admin/communities/A/purchase-batches/${id}/finalize`, 'ab', finalizeBody())).response.status, 403);
+      assert.equal((await c.call('POST', `/api/admin/communities/A/purchase-batches/${id}/finalize`, 'r', finalizeBody())).response.status, 403);
+      assert.equal((await c.call('POST', `/api/admin/communities/A/purchase-batches/${id}/finalize`, 'pa', finalizeBody())).response.status, 200);
+    },
+  ],
+  [
+    'finalize persists FIFO result, shortage, actual price and payable snapshot',
+    async (c) => {
+      const id = await preparePurchasing(c);
+      const result = await c.call('POST', `/api/admin/communities/A/purchase-batches/${id}/finalize`, 'aa', finalizeBody(20));
+      assert.equal(result.response.status, 200);
+      assert.equal(result.json.purchaseBatch.status, 'finalized');
+      assert.equal(result.json.purchaseBatch.finalization.purchasedQuantity, 20);
+      assert.equal(result.json.purchaseBatch.finalization.shortageQuantity, 10);
+      assert.equal(result.json.purchaseBatch.finalization.actualTotalMinor, 2500);
+      assert.equal(
+        c.db.database.prepare('SELECT finalized_by_user_id FROM purchase_batch_finalizations').get().finalized_by_user_id,
+        'aa',
+      );
+      const allocation = c.db.database.prepare('SELECT * FROM purchase_allocations').get();
+      assert.equal(allocation.fulfilled_quantity, 20);
+      assert.equal(allocation.shortage_quantity, 10);
+      assert.equal(allocation.final_amount_minor, 2500);
+      const mine = await c.call('GET', '/api/orders/order', 'r');
+      assert.deepEqual(mine.json.order.items[0].procurement, {
+        state: 'finalized', fulfilledQuantity: 20, shortageQuantity: 10, finalPayableMinor: 2500,
+      });
+      assert.equal(/receipt|actor|storage_key|090000000/i.test(JSON.stringify(mine.json)), false);
+    },
+  ],
+  [
+    'list and detail expose the same operational status before and after finalize',
+    async (c) => {
+      const id = await preparePurchasing(c);
+      let list = await c.call('GET', '/api/admin/communities/A/purchase-batches', 'aa');
+      let detail = await c.call('GET', `/api/admin/communities/A/purchase-batches/${id}`, 'aa');
+      assert.equal(list.json.purchaseBatches.find((batch) => batch.id === id).status, 'purchasing');
+      assert.equal(detail.json.purchaseBatch.status, 'purchasing');
+      assert.equal('display_status' in list.json.purchaseBatches.find((batch) => batch.id === id), false);
+
+      assert.equal((await c.call('POST', `/api/admin/communities/A/purchase-batches/${id}/finalize`, 'aa', finalizeBody())).response.status, 200);
+      list = await c.call('GET', '/api/admin/communities/A/purchase-batches', 'aa');
+      detail = await c.call('GET', `/api/admin/communities/A/purchase-batches/${id}`, 'aa');
+      assert.equal(list.json.purchaseBatches.find((batch) => batch.id === id).status, 'finalized');
+      assert.equal(detail.json.purchaseBatch.status, 'finalized');
+    },
+  ],
+  [
+    'zero purchase is valid and over-purchase or incomplete results are rejected atomically',
+    async (c) => {
+      const id = await preparePurchasing(c);
+      assert.equal((await c.call('POST', `/api/admin/communities/A/purchase-batches/${id}/finalize`, 'aa', { ...finalizeBody(), results: [] })).response.status, 400);
+      assert.equal((await c.call('POST', `/api/admin/communities/A/purchase-batches/${id}/finalize`, 'aa', finalizeBody(31))).response.status, 409);
+      assert.equal(c.db.database.prepare('SELECT COUNT(*) count FROM purchase_batch_finalizations').get().count, 0);
+      assert.equal((await c.call('POST', `/api/admin/communities/A/purchase-batches/${id}/finalize`, 'aa', finalizeBody(0))).response.status, 200);
+    },
+  ],
+  [
+    'finalize retry is stable and same key with different payload conflicts',
+    async (c) => {
+      const id = await preparePurchasing(c);
+      const first = await c.call('POST', `/api/admin/communities/A/purchase-batches/${id}/finalize`, 'aa', finalizeBody(20));
+      const retry = await c.call('POST', `/api/admin/communities/A/purchase-batches/${id}/finalize`, 'aa', finalizeBody(20));
+      const conflict = await c.call('POST', `/api/admin/communities/A/purchase-batches/${id}/finalize`, 'aa', finalizeBody(10));
+      assert.equal(retry.json.finalized, false);
+      assert.equal(retry.json.purchaseBatch.finalization.finalizedAt, first.json.purchaseBatch.finalization.finalizedAt);
+      assert.equal(conflict.response.status, 409);
+      assert.equal(conflict.json.error.code, 'IDEMPOTENCY_CONFLICT');
+      assert.equal(c.db.database.prepare("SELECT COUNT(*) count FROM audit_logs WHERE metadata LIKE '%PURCHASE_BATCH_FINALIZED%'").get().count, 1);
+    },
+  ],
+  [
+    'receipt metadata is admin-only, sanitized, and exposes no storage key',
+    async (c) => {
+      const id = await preparePurchasing(c);
+      assert.equal((await c.call('POST', `/api/admin/communities/A/purchase-batches/${id}/receipts`, 'r', { originalFilename: 'x.pdf', mimeType: 'application/pdf', sizeBytes: 10 })).response.status, 403);
+      const receipt = await c.call('POST', `/api/admin/communities/A/purchase-batches/${id}/receipts`, 'aa', { originalFilename: '../receipt.pdf', mimeType: 'application/pdf', sizeBytes: 10, uploadedBy: 'r' });
+      assert.equal(receipt.response.status, 201);
+      assert.equal(receipt.json.receipt.originalFilename, '.._receipt.pdf');
+      assert.equal(JSON.stringify(receipt.json).includes('storage'), false);
+    },
+  ],
+  [
+    'inactive community historical purchasing batch can be finalized',
+    async (c) => {
+      c.db.exec("INSERT INTO orders(id,user_id,community_id,status,estimated_total_minor,idempotency_key,contact_name_snapshot,contact_phone_snapshot)VALUES('order-x','r','X','formed',2700,'order-x-key','住戶','0900000004');INSERT INTO order_items(id,order_id,offering_id,product_id,product_name_snapshot,unit_label_snapshot,unit_price_minor,quantity,estimated_subtotal_minor)VALUES('item-x','order-x','ox','p','白米','包',90,30,2700);INSERT INTO batch_commitments(id,request_id,batch_id,quantity,source_type,source_reference,order_item_id,status)VALUES('commit-x','request-x','GX',30,'order_item','item-x','item-x','active')");
+      const made = await c.call('POST', '/api/admin/communities/X/purchase-batches', 'aa', createBody(['GX'], 'inactive-final-create'));
+      const id = made.json.purchaseBatch.id;
+      await c.call('POST', `/api/admin/communities/X/purchase-batches/${id}/start`, 'aa', {});
+      const result = await c.call('POST', `/api/admin/communities/X/purchase-batches/${id}/finalize`, 'aa', {
+        idempotencyKey: 'inactive-final-key', receiptId: null,
+        results: [{ groupingId: 'GX', purchasedQuantity: 0, actualUnitPriceMinor: 90 }],
+      });
+      assert.equal(result.response.status, 200);
+      assert.equal(result.json.purchaseBatch.status, 'finalized');
+    },
+  ],
+  [
+    'unexpected finalize repository error remains a safe 500',
+    async (c) => {
+      const id = await preparePurchasing(c);
+      c.repositories.batch = async () => { throw new Error('SELECT secret token storage-key stack'); };
+      const result = await c.call('POST', `/api/admin/communities/A/purchase-batches/${id}/finalize`, 'aa', finalizeBody());
+      assert.equal(result.response.status, 500);
+      assert.equal(/SELECT|secret|token|storage-key|stack/i.test(JSON.stringify(result.json)), false);
     },
   ],
 ];

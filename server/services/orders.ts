@@ -1,4 +1,5 @@
 import { createId } from '../../domain/ids.ts';
+import { deriveProcurementState } from '../../domain/procurement.ts';
 import { ApiError } from '../api-error.ts';
 import { Repositories, type OrderRow } from '../repositories/index.ts';
 import { requireActiveUser, isProfileComplete } from './index.ts';
@@ -40,6 +41,11 @@ export class OrderService {
     const community = await this.repositories.communities.findById(
       order.community_id,
     );
+    const procurementRows =
+      await this.repositories.purchaseBatches.procurementForOrder(order.id);
+    const procurementByItem = new Map(
+      procurementRows.map((row) => [String(row.order_item_id), row]),
+    );
     const publicOrder: Record<string, unknown> = {
       id: order.id,
       userId: order.user_id,
@@ -50,7 +56,19 @@ export class OrderService {
       estimatedTotalMinor: order.estimated_total_minor,
       actualTotalMinor: order.actual_total_minor,
       createdAt: order.created_at,
-      items,
+      items: items.map((item) => {
+        const procurement = procurementByItem.get(item.id);
+        const finalizedQuantity = Number(procurement?.finalized_quantity ?? 0);
+        return {
+          ...item,
+          procurement: {
+            state: deriveProcurementState(item.quantity, finalizedQuantity),
+            fulfilledQuantity: Number(procurement?.fulfilled_quantity ?? 0),
+            shortageQuantity: Number(procurement?.shortage_quantity ?? 0),
+            finalPayableMinor: Number(procurement?.final_payable_minor ?? 0),
+          },
+        };
+      }),
       pickup,
     };
     if (includeContact)

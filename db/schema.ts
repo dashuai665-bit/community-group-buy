@@ -265,6 +265,54 @@ export const purchaseBatchGroups = sqliteTable('purchase_batch_groups', {
   index('purchase_batch_groups_purchase_batch_idx').on(table.purchaseBatchId),
 ]);
 
+export const purchaseReceipts = sqliteTable('purchase_receipts', {
+  id: text('id').primaryKey(),
+  purchaseBatchId: text('purchase_batch_id').notNull().unique().references(() => purchaseBatches.id, { onDelete: 'restrict' }),
+  storageKey: text('storage_key').notNull().unique(),
+  originalFilename: text('original_filename').notNull(),
+  mimeType: text('mime_type').notNull(),
+  sizeBytes: integer('size_bytes').notNull(),
+  uploadedByUserId: text('uploaded_by_user_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  uploadedAt: text('uploaded_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const purchaseBatchFinalizations = sqliteTable('purchase_batch_finalizations', {
+  purchaseBatchId: text('purchase_batch_id').primaryKey().references(() => purchaseBatches.id, { onDelete: 'restrict' }),
+  idempotencyKey: text('idempotency_key').notNull(),
+  canonicalPayload: text('canonical_payload').notNull(),
+  receiptId: text('receipt_id').references(() => purchaseReceipts.id, { onDelete: 'restrict' }),
+  committedQuantity: integer('committed_quantity').notNull(),
+  purchasedQuantity: integer('purchased_quantity').notNull(),
+  shortageQuantity: integer('shortage_quantity').notNull(),
+  estimatedTotalMinor: integer('estimated_total_minor').notNull(),
+  actualTotalMinor: integer('actual_total_minor').notNull(),
+  finalizedByUserId: text('finalized_by_user_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  finalizedAt: text('finalized_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const purchaseGroupResults = sqliteTable('purchase_group_results', {
+  groupBuyBatchId: text('group_buy_batch_id').primaryKey().references(() => purchaseBatchGroups.groupBuyBatchId, { onDelete: 'restrict' }),
+  purchaseBatchId: text('purchase_batch_id').notNull().references(() => purchaseBatchFinalizations.purchaseBatchId, { onDelete: 'restrict' }),
+  committedQuantitySnapshot: integer('committed_quantity_snapshot').notNull(),
+  purchasedQuantity: integer('purchased_quantity').notNull(),
+  shortageQuantity: integer('shortage_quantity').notNull(),
+  actualUnitPriceMinor: integer('actual_unit_price_minor').notNull(),
+  estimatedSubtotalMinor: integer('estimated_subtotal_minor').notNull(),
+  actualSubtotalMinor: integer('actual_subtotal_minor').notNull(),
+});
+
+export const purchaseAllocations = sqliteTable('purchase_allocations', {
+  batchCommitmentId: text('batch_commitment_id').primaryKey().references(() => batchCommitments.id, { onDelete: 'restrict' }),
+  purchaseBatchId: text('purchase_batch_id').notNull().references(() => purchaseBatchFinalizations.purchaseBatchId, { onDelete: 'restrict' }),
+  groupBuyBatchId: text('group_buy_batch_id').notNull().references(() => purchaseGroupResults.groupBuyBatchId, { onDelete: 'restrict' }),
+  orderItemId: text('order_item_id').notNull().references(() => orderItems.id, { onDelete: 'restrict' }),
+  committedQuantitySnapshot: integer('committed_quantity_snapshot').notNull(),
+  fulfilledQuantity: integer('fulfilled_quantity').notNull(),
+  shortageQuantity: integer('shortage_quantity').notNull(),
+  finalAmountMinor: integer('final_amount_minor').notNull(),
+  createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
 export const pickupRecords = sqliteTable('pickup_records', {
   id: text('id').primaryKey(),
   orderId: text('order_id').notNull().references(() => orders.id, { onDelete: 'restrict' }),

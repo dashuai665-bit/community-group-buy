@@ -9,6 +9,7 @@ const migrationUrls = [
   new URL('../../drizzle/0002_magical_gamma_corps.sql', import.meta.url),
   new URL('../../drizzle/0003_bumpy_cannonball.sql', import.meta.url),
   new URL('../../drizzle/0004_purchase_batches.sql', import.meta.url),
+  new URL('../../drizzle/0005_purchase_finalization.sql', import.meta.url),
 ];
 
 async function createMigratedDatabase() {
@@ -35,7 +36,7 @@ test('migration 可以重複建立兩個乾淨 SQLite DB，且 foreign_key_check
     ).all();
     assert.deepEqual(
       tables.map(({ name }) => name),
-      ['audit_logs', 'batch_commitments', 'communities', 'community_members', 'community_product_offerings', 'group_buy_batches', 'order_items', 'orders', 'pickup_records', 'platform_roles', 'product_wishes', 'products', 'purchase_batch_groups', 'purchase_batches', 'user_identities', 'user_profiles', 'users'],
+      ['audit_logs', 'batch_commitments', 'communities', 'community_members', 'community_product_offerings', 'group_buy_batches', 'order_items', 'orders', 'pickup_records', 'platform_roles', 'product_wishes', 'products', 'purchase_allocations', 'purchase_batch_finalizations', 'purchase_batch_groups', 'purchase_batches', 'purchase_group_results', 'purchase_receipts', 'user_identities', 'user_profiles', 'users'],
     );
     assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
     database.close();
@@ -103,6 +104,34 @@ test('Phase 6C purchase batch constraints、immutable membership 與 rollback �
   assert.equal(database.prepare("SELECT COUNT(*) count FROM purchase_batches WHERE id='rollback'").get().count, 0);
   assert.equal(database.prepare("SELECT COUNT(*) count FROM purchase_batch_groups WHERE group_buy_batch_id='g2'").get().count, 0);
   assert.equal(database.prepare("SELECT status FROM group_buy_batches WHERE id='g2'").get().status, 'formed');
+  assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
+  database.close();
+});
+
+test('Phase 6D finalized records immutable 且 allocation relationships 受 DB 保護', async () => {
+  const database = await createMigratedDatabase();
+  seedUserAndCommunities(database);
+  database.exec("INSERT INTO user_profiles(user_id)VALUES('user-1');INSERT INTO products(id,name,source_type,unit_label)VALUES('p','米','manual','包');INSERT INTO community_product_offerings(id,community_id,product_id,price_minor,batch_threshold,min_quantity_per_order)VALUES('o','A','p',100,30,1);INSERT INTO group_buy_batches(id,offering_id,sequence_number,status,threshold_quantity,committed_quantity)VALUES('g1','o',1,'formed',30,1),('g2','o',2,'formed',30,1);INSERT INTO orders(id,user_id,community_id,status,estimated_total_minor,idempotency_key,contact_name_snapshot,contact_phone_snapshot)VALUES('order1','user-1','A','formed',100,'order1-key','住戶','0900'),('order2','user-1','A','formed',100,'order2-key','住戶','0900');INSERT INTO order_items(id,order_id,offering_id,product_id,product_name_snapshot,unit_label_snapshot,unit_price_minor,quantity,estimated_subtotal_minor)VALUES('item1','order1','o','p','米','包',100,1,100),('item2','order2','o','p','米','包',100,1,100);INSERT INTO batch_commitments(id,request_id,batch_id,quantity,source_type,source_reference,order_item_id,status)VALUES('commit1','request1','g1',1,'order_item','item1','item1','active'),('commit2','request2','g2',1,'order_item','item2','item2','active');INSERT INTO purchase_batches(id,community_id,status,idempotency_key,created_by_user_id)VALUES('pb1','A','purchasing','pb1-key','user-1'),('pb2','A','purchasing','pb2-key','user-1');INSERT INTO purchase_batch_groups(purchase_batch_id,group_buy_batch_id)VALUES('pb1','g1'),('pb2','g2');INSERT INTO purchase_batch_finalizations(purchase_batch_id,idempotency_key,canonical_payload,committed_quantity,purchased_quantity,shortage_quantity,estimated_total_minor,actual_total_minor,finalized_by_user_id)VALUES('pb1','final1','{}',1,1,0,100,100,'user-1'),('pb2','final2','{}',1,1,0,100,100,'user-1');INSERT INTO purchase_group_results(group_buy_batch_id,purchase_batch_id,committed_quantity_snapshot,purchased_quantity,shortage_quantity,actual_unit_price_minor,estimated_subtotal_minor,actual_subtotal_minor)VALUES('g1','pb1',1,1,0,100,100,100),('g2','pb2',1,1,0,100,100,100)");
+
+  const allocation = database.prepare("INSERT INTO purchase_allocations(batch_commitment_id,purchase_batch_id,group_buy_batch_id,order_item_id,committed_quantity_snapshot,fulfilled_quantity,shortage_quantity,final_amount_minor)VALUES(?,?,?,?,1,1,0,100)");
+  assert.throws(() => allocation.run('commit1','pb2','g1','item1'), /PURCHASE_ALLOCATION_RELATION_INVALID/);
+  assert.throws(() => allocation.run('commit2','pb1','g1','item2'), /PURCHASE_ALLOCATION_RELATION_INVALID/);
+  assert.throws(() => allocation.run('commit1','pb1','g1','item2'), /PURCHASE_ALLOCATION_RELATION_INVALID/);
+  allocation.run('commit1','pb1','g1','item1');
+
+  assert.throws(() => database.prepare("UPDATE purchase_batch_finalizations SET actual_total_minor=0 WHERE purchase_batch_id='pb1'").run(), /PURCHASE_FINALIZATION_IMMUTABLE/);
+  assert.throws(() => database.prepare("DELETE FROM purchase_batch_finalizations WHERE purchase_batch_id='pb1'").run(), /PURCHASE_FINALIZATION_IMMUTABLE/);
+  assert.throws(() => database.prepare("UPDATE purchase_group_results SET actual_unit_price_minor=0 WHERE group_buy_batch_id='g1'").run(), /PURCHASE_RESULT_IMMUTABLE/);
+  assert.throws(() => database.prepare("DELETE FROM purchase_group_results WHERE group_buy_batch_id='g1'").run(), /PURCHASE_RESULT_IMMUTABLE/);
+  assert.throws(() => database.prepare("UPDATE purchase_allocations SET fulfilled_quantity=0 WHERE batch_commitment_id='commit1'").run(), /PURCHASE_ALLOCATION_IMMUTABLE/);
+  assert.throws(() => database.prepare("DELETE FROM purchase_allocations WHERE batch_commitment_id='commit1'").run(), /PURCHASE_ALLOCATION_IMMUTABLE/);
+  assert.equal(database.prepare("SELECT actual_total_minor FROM purchase_batch_finalizations WHERE purchase_batch_id='pb1'").get().actual_total_minor, 100);
+  const result = database.prepare("SELECT purchased_quantity,actual_unit_price_minor FROM purchase_group_results WHERE group_buy_batch_id='g1'").get();
+  assert.equal(result.purchased_quantity, 1);
+  assert.equal(result.actual_unit_price_minor, 100);
+  const savedAllocation = database.prepare("SELECT fulfilled_quantity,final_amount_minor FROM purchase_allocations WHERE batch_commitment_id='commit1'").get();
+  assert.equal(savedAllocation.fulfilled_quantity, 1);
+  assert.equal(savedAllocation.final_amount_minor, 100);
   assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
   database.close();
 });

@@ -132,6 +132,19 @@ export interface PurchaseBatchRow {
   created_at: string;
   updated_at: string;
 }
+export interface PurchaseFinalizationRow {
+  purchase_batch_id: string;
+  idempotency_key: string;
+  canonical_payload: string;
+  receipt_id: string | null;
+  committed_quantity: number;
+  purchased_quantity: number;
+  shortage_quantity: number;
+  estimated_total_minor: number;
+  actual_total_minor: number;
+  finalized_by_user_id: string;
+  finalized_at: string;
+}
 
 class RepositoryBase {
   protected readonly context: RepositoryContext;
@@ -931,6 +944,72 @@ export class ReconciliationRepository extends RepositoryBase {
       totalDrift,
     };
   }
+  async inspectProcurement(purchaseBatchId: string) {
+    const groupingDrift =
+      (
+        await this.statement(
+          `SELECT r.group_buy_batch_id,r.purchased_quantity,r.shortage_quantity,
+           COALESCE(SUM(a.fulfilled_quantity),0) AS allocated,
+           COALESCE(SUM(a.shortage_quantity),0) AS allocated_shortage
+           FROM purchase_group_results r LEFT JOIN purchase_allocations a ON a.group_buy_batch_id=r.group_buy_batch_id
+           WHERE r.purchase_batch_id=? GROUP BY r.group_buy_batch_id
+           HAVING r.purchased_quantity<>allocated OR r.shortage_quantity<>allocated_shortage`,
+          purchaseBatchId,
+        ).all()
+      ).results ?? [];
+    const allocationDrift =
+      (
+        await this.statement(
+          `SELECT batch_commitment_id FROM purchase_allocations
+           WHERE purchase_batch_id=? AND fulfilled_quantity+shortage_quantity<>committed_quantity_snapshot`,
+          purchaseBatchId,
+        ).all()
+      ).results ?? [];
+    const totalDrift =
+      (
+        await this.statement(
+          `SELECT f.purchase_batch_id,f.actual_total_minor,COALESCE(SUM(r.actual_subtotal_minor),0) AS calculated
+           FROM purchase_batch_finalizations f LEFT JOIN purchase_group_results r ON r.purchase_batch_id=f.purchase_batch_id
+           WHERE f.purchase_batch_id=? GROUP BY f.purchase_batch_id HAVING f.actual_total_minor<>calculated`,
+          purchaseBatchId,
+        ).all()
+      ).results ?? [];
+    const payableDrift =
+      (
+        await this.statement(
+          `SELECT a.group_buy_batch_id FROM purchase_allocations a
+           JOIN purchase_group_results r ON r.group_buy_batch_id=a.group_buy_batch_id
+           WHERE a.purchase_batch_id=? AND a.final_amount_minor<>a.fulfilled_quantity*r.actual_unit_price_minor`,
+          purchaseBatchId,
+        ).all()
+      ).results ?? [];
+    const relationalDrift =
+      (
+        await this.statement(
+          `SELECT a.batch_commitment_id FROM purchase_allocations a
+           LEFT JOIN purchase_group_results r ON r.group_buy_batch_id=a.group_buy_batch_id
+             AND r.purchase_batch_id=a.purchase_batch_id
+           LEFT JOIN batch_commitments bc ON bc.id=a.batch_commitment_id
+             AND bc.batch_id=a.group_buy_batch_id AND bc.order_item_id=a.order_item_id
+             AND bc.status='active'
+           WHERE a.purchase_batch_id=? AND (r.group_buy_batch_id IS NULL OR bc.id IS NULL)`,
+          purchaseBatchId,
+        ).all()
+      ).results ?? [];
+    return {
+      ok:
+        groupingDrift.length === 0 &&
+        allocationDrift.length === 0 &&
+        totalDrift.length === 0 &&
+        payableDrift.length === 0 &&
+        relationalDrift.length === 0,
+      groupingDrift,
+      allocationDrift,
+      totalDrift,
+      payableDrift,
+      relationalDrift,
+    };
+  }
 }
 
 export class ProductWishRepository extends RepositoryBase {
@@ -1015,12 +1094,15 @@ export class PurchaseBatchRepository extends RepositoryBase {
     return (
       (
         await this.statement(
-          `SELECT p.*,COUNT(pg.group_buy_batch_id) AS group_count,
+          `SELECT p.*,CASE WHEN f.purchase_batch_id IS NULL THEN p.status ELSE 'finalized' END AS display_status,
+           f.purchased_quantity,f.shortage_quantity,f.actual_total_minor,f.finalized_at,
+           COUNT(pg.group_buy_batch_id) AS group_count,
            COALESCE(SUM(g.committed_quantity),0) AS total_quantity,
            COALESCE(SUM((SELECT SUM(bc.quantity*oi.unit_price_minor) FROM batch_commitments bc JOIN order_items oi ON oi.id=bc.order_item_id WHERE bc.batch_id=g.id AND bc.status='active')),0) AS estimated_total_minor
            FROM purchase_batches p
            LEFT JOIN purchase_batch_groups pg ON pg.purchase_batch_id=p.id
            LEFT JOIN group_buy_batches g ON g.id=pg.group_buy_batch_id
+           LEFT JOIN purchase_batch_finalizations f ON f.purchase_batch_id=p.id
            WHERE p.community_id=? GROUP BY p.id ORDER BY p.created_at DESC,p.id DESC`,
           communityId,
         ).all<Record<string, unknown>>()
@@ -1033,11 +1115,13 @@ export class PurchaseBatchRepository extends RepositoryBase {
         await this.statement(
           `SELECT g.id,g.sequence_number,g.status,g.threshold_quantity,g.committed_quantity,g.formed_at,
            o.id AS offering_id,o.currency,p.name AS product_name,p.unit_label,
-           COALESCE(SUM(CASE WHEN bc.status='active' THEN bc.quantity*oi.unit_price_minor ELSE 0 END),0) AS estimated_amount_minor
+           COALESCE(SUM(CASE WHEN bc.status='active' THEN bc.quantity*oi.unit_price_minor ELSE 0 END),0) AS estimated_amount_minor,
+           r.purchased_quantity,r.shortage_quantity,r.actual_unit_price_minor,r.actual_subtotal_minor
            FROM purchase_batch_groups pg JOIN group_buy_batches g ON g.id=pg.group_buy_batch_id
            JOIN community_product_offerings o ON o.id=g.offering_id JOIN products p ON p.id=o.product_id
            LEFT JOIN batch_commitments bc ON bc.batch_id=g.id LEFT JOIN order_items oi ON oi.id=bc.order_item_id
-           WHERE pg.purchase_batch_id=? GROUP BY g.id,o.id,o.currency,p.name,p.unit_label ORDER BY pg.created_at,g.id`,
+           LEFT JOIN purchase_group_results r ON r.group_buy_batch_id=g.id
+           WHERE pg.purchase_batch_id=? GROUP BY g.id,o.id,o.currency,p.name,p.unit_label,r.group_buy_batch_id ORDER BY pg.created_at,g.id`,
           purchaseBatchId,
         ).all<Record<string, unknown>>()
       ).results ?? []
@@ -1123,6 +1207,161 @@ export class PurchaseBatchRepository extends RepositoryBase {
       input.actorUserId,
       input.communityId,
       input.purchaseBatchId,
+    );
+  }
+  findFinalization(purchaseBatchId: string) {
+    return this.statement(
+      'SELECT * FROM purchase_batch_finalizations WHERE purchase_batch_id=?',
+      purchaseBatchId,
+    ).first<PurchaseFinalizationRow>();
+  }
+  async listCommitments(groupingId: string) {
+    return (
+      (
+        await this.statement(
+          `SELECT bc.id,bc.order_item_id,bc.quantity,o.created_at AS order_created_at,o.id AS order_id
+           FROM batch_commitments bc
+           JOIN order_items oi ON oi.id=bc.order_item_id
+           JOIN orders o ON o.id=oi.order_id
+           WHERE bc.batch_id=? AND bc.status='active'
+           ORDER BY o.created_at,o.id,oi.id,bc.id`,
+          groupingId,
+        ).all<Record<string, unknown>>()
+      ).results ?? []
+    );
+  }
+  findReceipt(communityId: string, purchaseBatchId: string, receiptId: string) {
+    return this.statement(
+      `SELECT r.* FROM purchase_receipts r JOIN purchase_batches p ON p.id=r.purchase_batch_id
+       WHERE p.community_id=? AND r.purchase_batch_id=? AND r.id=?`,
+      communityId,
+      purchaseBatchId,
+      receiptId,
+    ).first<Record<string, unknown>>();
+  }
+  insertReceiptStatement(input: {
+    id: string;
+    purchaseBatchId: string;
+    storageKey: string;
+    originalFilename: string;
+    mimeType: string;
+    sizeBytes: number;
+    actorUserId: string;
+  }) {
+    return this.statement(
+      'INSERT INTO purchase_receipts(id,purchase_batch_id,storage_key,original_filename,mime_type,size_bytes,uploaded_by_user_id) VALUES (?,?,?,?,?,?,?)',
+      input.id,
+      input.purchaseBatchId,
+      input.storageKey,
+      input.originalFilename,
+      input.mimeType,
+      input.sizeBytes,
+      input.actorUserId,
+    );
+  }
+  insertFinalizationStatement(input: {
+    purchaseBatchId: string;
+    idempotencyKey: string;
+    canonicalPayload: string;
+    receiptId: string | null;
+    committedQuantity: number;
+    purchasedQuantity: number;
+    shortageQuantity: number;
+    estimatedTotalMinor: number;
+    actualTotalMinor: number;
+    actorUserId: string;
+  }) {
+    return this.statement(
+      `INSERT INTO purchase_batch_finalizations(purchase_batch_id,idempotency_key,canonical_payload,receipt_id,committed_quantity,purchased_quantity,shortage_quantity,estimated_total_minor,actual_total_minor,finalized_by_user_id)
+       SELECT ?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM purchase_batches WHERE id=? AND status='purchasing')`,
+      input.purchaseBatchId,
+      input.idempotencyKey,
+      input.canonicalPayload,
+      input.receiptId,
+      input.committedQuantity,
+      input.purchasedQuantity,
+      input.shortageQuantity,
+      input.estimatedTotalMinor,
+      input.actualTotalMinor,
+      input.actorUserId,
+      input.purchaseBatchId,
+    );
+  }
+  insertGroupResultStatement(input: {
+    purchaseBatchId: string;
+    groupingId: string;
+    committedQuantity: number;
+    purchasedQuantity: number;
+    actualUnitPriceMinor: number;
+    estimatedSubtotalMinor: number;
+  }) {
+    return this.statement(
+      `INSERT INTO purchase_group_results(group_buy_batch_id,purchase_batch_id,committed_quantity_snapshot,purchased_quantity,shortage_quantity,actual_unit_price_minor,estimated_subtotal_minor,actual_subtotal_minor)
+       VALUES (?,?,?,?,?,?,?,?)`,
+      input.groupingId,
+      input.purchaseBatchId,
+      input.committedQuantity,
+      input.purchasedQuantity,
+      input.committedQuantity - input.purchasedQuantity,
+      input.actualUnitPriceMinor,
+      input.estimatedSubtotalMinor,
+      input.purchasedQuantity * input.actualUnitPriceMinor,
+    );
+  }
+  insertAllocationStatement(input: {
+    commitmentId: string;
+    purchaseBatchId: string;
+    groupingId: string;
+    orderItemId: string;
+    committedQuantity: number;
+    fulfilledQuantity: number;
+    shortageQuantity: number;
+    finalAmountMinor: number;
+  }) {
+    return this.statement(
+      `INSERT INTO purchase_allocations(batch_commitment_id,purchase_batch_id,group_buy_batch_id,order_item_id,committed_quantity_snapshot,fulfilled_quantity,shortage_quantity,final_amount_minor)
+       VALUES (?,?,?,?,?,?,?,?)`,
+      input.commitmentId,
+      input.purchaseBatchId,
+      input.groupingId,
+      input.orderItemId,
+      input.committedQuantity,
+      input.fulfilledQuantity,
+      input.shortageQuantity,
+      input.finalAmountMinor,
+    );
+  }
+  finalizeAuditStatement(input: {
+    id: string;
+    purchaseBatchId: string;
+    communityId: string;
+    actorUserId: string;
+    metadata: Record<string, unknown>;
+  }) {
+    return this.statement(
+      `INSERT INTO audit_logs(id,actor_user_id,community_id,action_type,target_type,target_id,metadata)
+       VALUES (?,?,?,'order_status_changed','purchase_batch',?,?)`,
+      input.id,
+      input.actorUserId,
+      input.communityId,
+      input.purchaseBatchId,
+      JSON.stringify(input.metadata),
+    );
+  }
+  async procurementForOrder(orderId: string) {
+    return (
+      (
+        await this.statement(
+          `SELECT oi.id AS order_item_id,oi.quantity AS ordered_quantity,
+           COALESCE(SUM(pa.committed_quantity_snapshot),0) AS finalized_quantity,
+           COALESCE(SUM(pa.fulfilled_quantity),0) AS fulfilled_quantity,
+           COALESCE(SUM(pa.shortage_quantity),0) AS shortage_quantity,
+           COALESCE(SUM(pa.final_amount_minor),0) AS final_payable_minor
+           FROM order_items oi LEFT JOIN purchase_allocations pa ON pa.order_item_id=oi.id
+           WHERE oi.order_id=? GROUP BY oi.id ORDER BY oi.created_at,oi.id`,
+          orderId,
+        ).all<Record<string, unknown>>()
+      ).results ?? []
     );
   }
 }

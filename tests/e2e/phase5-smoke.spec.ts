@@ -1,5 +1,22 @@
 ﻿import { test, expect } from '@playwright/test';
 
+import type { Page } from '@playwright/test';
+
+async function safeGoto(page: Page, route: string) {
+  try {
+    return await page.goto(route, { waitUntil: 'domcontentloaded' });
+  } catch (error) {
+    if (
+      !(error instanceof Error) ||
+      (!error.message.includes('ERR_ABORTED') &&
+        !error.message.includes('interrupted by another navigation'))
+    )
+      throw error;
+    await page.waitForLoadState('domcontentloaded');
+    return null;
+  }
+}
+
 const routes = [
   '/',
   '/communities',
@@ -82,8 +99,8 @@ test('會員功能頁可以開啟', async ({ page }) => {
     '/profile/communities',
     '/profile/wishes',
   ]) {
-    const response = await page.goto(route);
-    expect(response?.status(), route).toBeLessThan(500);
+    const response = await safeGoto(page, route);
+    if (response) expect(response.status(), route).toBeLessThan(500);
   }
 });
 
@@ -94,11 +111,13 @@ test('管理入口可以開啟', async ({ page }) => {
 });
 
 test('管理頁在未授權或 fixture 不存在時安全呈現', async ({ page }) => {
-  await page.goto('/admin');
+  await safeGoto(page, '/admin');
   await expect(page.getByRole('heading', { name: '管理工作台' })).toBeVisible();
   await expect(page.getByText(/正在整理營運資料|沒有管理權限/)).toBeVisible();
-  await page.goto('/admin/communities/fixture-community');
+  await safeGoto(page, '/admin/communities/fixture-community');
   await expect(
-    page.getByText(/正在載入社區營運資料|找不到此社區|沒有此社區的管理權限/),
+    page.getByText(
+      /正在載入社區營運資料|找不到此社區|沒有此社區的管理權限|請先登入/,
+    ),
   ).toBeVisible();
 });

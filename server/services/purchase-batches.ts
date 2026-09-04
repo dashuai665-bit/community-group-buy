@@ -3,6 +3,11 @@ import {
   canStartPurchasing,
   validateGroupingSelection,
 } from '../../domain/purchase-batches.ts';
+import {
+  allocateFifo,
+  canonicalizeFinalizePayload,
+} from '../../domain/procurement.ts';
+import type { FinalizeResultInput } from '../../domain/procurement.ts';
 import { createId } from '../../domain/ids.ts';
 import { ApiError } from '../api-error.ts';
 import { Repositories } from '../repositories/index.ts';
@@ -52,7 +57,26 @@ export class PurchaseBatchService {
         estimatedAmountMinor: Number(group.estimated_amount_minor),
       })),
     );
-    return { ...batch, groups, ...totals };
+    const finalization =
+      await this.repositories.purchaseBatches.findFinalization(purchaseBatchId);
+    return {
+      ...batch,
+      status: finalization ? 'finalized' : batch.status,
+      groups,
+      ...totals,
+      finalization: finalization
+        ? {
+            committedQuantity: finalization.committed_quantity,
+            purchasedQuantity: finalization.purchased_quantity,
+            shortageQuantity: finalization.shortage_quantity,
+            estimatedTotalMinor: finalization.estimated_total_minor,
+            actualTotalMinor: finalization.actual_total_minor,
+            receiptId: finalization.receipt_id,
+            finalizedByUserId: finalization.finalized_by_user_id,
+            finalizedAt: finalization.finalized_at,
+          }
+        : null,
+    };
   }
 
   private async requireEquivalentIdempotentRequest(
@@ -81,11 +105,18 @@ export class PurchaseBatchService {
 
   async list(userId: string | null, communityId: string) {
     await this.requireManager(userId, communityId);
+    const purchaseBatches =
+      await this.repositories.purchaseBatches.listForCommunity(communityId);
     return {
       eligibleGroups:
         await this.repositories.purchaseBatches.listEligibleGroups(communityId),
-      purchaseBatches:
-        await this.repositories.purchaseBatches.listForCommunity(communityId),
+      purchaseBatches: purchaseBatches.map((batch) => {
+        const { display_status: displayStatus, ...publicBatch } = batch;
+        return {
+          ...publicBatch,
+          status: displayStatus,
+        };
+      }),
     };
   }
 
@@ -256,5 +287,241 @@ export class PurchaseBatchService {
         '採購批次狀態已變更',
       );
     return this.detail(communityId, purchaseBatchId);
+  }
+
+  async createReceipt(
+    userId: string | null,
+    communityId: string,
+    purchaseBatchId: string,
+    input: { originalFilename: string; mimeType: string; sizeBytes: number },
+  ) {
+    const actor = await this.requireManager(userId, communityId);
+    const batch = await this.repositories.purchaseBatches.findById(
+      communityId,
+      purchaseBatchId,
+    );
+    if (!batch)
+      throw new ApiError(404, 'PURCHASE_BATCH_NOT_FOUND', '找不到此採購批次');
+    if (batch.status !== 'purchasing')
+      throw new ApiError(409, 'PURCHASE_BATCH_NOT_PURCHASING', '採購批次尚未開始採購');
+    const allowedMimeTypes = ['image/jpeg', 'image/png', 'application/pdf'];
+    if (
+      !allowedMimeTypes.includes(input.mimeType) ||
+      !Number.isInteger(input.sizeBytes) ||
+      input.sizeBytes <= 0 ||
+      input.sizeBytes > 10 * 1024 * 1024
+    )
+      throw new ApiError(400, 'INVALID_RECEIPT_METADATA', '收據格式或大小不正確');
+    const safeFilename = Array.from(input.originalFilename)
+      .map((character) =>
+        character === '/' || character === '\\' || character < ' '
+          ? '_'
+          : character,
+      )
+      .join('')
+      .slice(0, 200);
+    if (!safeFilename)
+      throw new ApiError(400, 'INVALID_RECEIPT_METADATA', '收據檔名不正確');
+    const id = createId();
+    await this.repositories.batch([
+      this.repositories.purchaseBatches.insertReceiptStatement({
+        id,
+        purchaseBatchId,
+        storageKey: `receipts/${communityId}/${purchaseBatchId}/${id}`,
+        originalFilename: safeFilename,
+        mimeType: input.mimeType,
+        sizeBytes: input.sizeBytes,
+        actorUserId: actor.id,
+      }),
+    ]);
+    return { id, originalFilename: safeFilename, mimeType: input.mimeType, sizeBytes: input.sizeBytes };
+  }
+
+  async finalize(
+    userId: string | null,
+    communityId: string,
+    purchaseBatchId: string,
+    input: {
+      results: FinalizeResultInput[];
+      receiptId: string | null;
+      idempotencyKey: string;
+    },
+  ) {
+    const actor = await this.requireManager(userId, communityId);
+    const batch = await this.repositories.purchaseBatches.findById(
+      communityId,
+      purchaseBatchId,
+    );
+    if (!batch)
+      throw new ApiError(404, 'PURCHASE_BATCH_NOT_FOUND', '找不到此採購批次');
+    const canonicalPayload = canonicalizeFinalizePayload(
+      input.results,
+      input.receiptId,
+    );
+    const existing =
+      await this.repositories.purchaseBatches.findFinalization(purchaseBatchId);
+    if (existing) {
+      if (
+        existing.idempotency_key === input.idempotencyKey &&
+        existing.canonical_payload === canonicalPayload
+      )
+        return { finalized: false, purchaseBatch: await this.detail(communityId, purchaseBatchId) };
+      throw new ApiError(
+        409,
+        existing.idempotency_key === input.idempotencyKey
+          ? 'IDEMPOTENCY_CONFLICT'
+          : 'PURCHASE_BATCH_FINALIZE_CONFLICT',
+        '此採購批次已有不同的結算結果',
+      );
+    }
+    if (batch.status !== 'purchasing')
+      throw new ApiError(409, 'PURCHASE_BATCH_NOT_PURCHASING', '採購批次尚未開始採購');
+    const groups = await this.repositories.purchaseBatches.listGroups(purchaseBatchId);
+    const expectedIds = groups.map((group) => String(group.id)).sort();
+    const actualIds = input.results.map((result) => result.groupingId).sort();
+    if (
+      new Set(actualIds).size !== actualIds.length ||
+      expectedIds.length !== actualIds.length ||
+      expectedIds.some((id, index) => id !== actualIds[index])
+    )
+      throw new ApiError(400, 'INCOMPLETE_GROUPING_RESULTS', '必須完整提供每個集單結果且不得重複');
+    if (
+      input.results.some(
+        (result) =>
+          !Number.isInteger(result.purchasedQuantity) ||
+          result.purchasedQuantity < 0 ||
+          !Number.isInteger(result.actualUnitPriceMinor) ||
+          result.actualUnitPriceMinor < 0,
+      )
+    )
+      throw new ApiError(400, 'INVALID_PURCHASE_RESULT', '採購數量或價格不正確');
+    if (
+      input.receiptId &&
+      !(await this.repositories.purchaseBatches.findReceipt(
+        communityId,
+        purchaseBatchId,
+        input.receiptId,
+      ))
+    )
+      throw new ApiError(404, 'RECEIPT_NOT_FOUND', '找不到此收據資料');
+
+    const statements = [];
+    const resultSummaries = [];
+    let committedQuantity = 0;
+    let purchasedQuantity = 0;
+    let estimatedTotalMinor = 0;
+    let actualTotalMinor = 0;
+    for (const group of groups) {
+      const result = input.results.find(
+        (candidate) => candidate.groupingId === group.id,
+      )!;
+      const committed = Number(group.committed_quantity);
+      if (result.purchasedQuantity > committed)
+        throw new ApiError(409, 'PURCHASED_QUANTITY_EXCEEDS_COMMITTED', '實際採購數量不可超過需求');
+      const commitments =
+        await this.repositories.purchaseBatches.listCommitments(String(group.id));
+      if (
+        commitments.reduce(
+          (total, commitment) => total + Number(commitment.quantity),
+          0,
+        ) !== committed
+      )
+        throw new Error('Purchase grouping commitment snapshot drift');
+      const allocations = allocateFifo(
+        commitments.map((commitment) => ({
+          id: String(commitment.id),
+          orderItemId: String(commitment.order_item_id),
+          quantity: Number(commitment.quantity),
+        })),
+        result.purchasedQuantity,
+        result.actualUnitPriceMinor,
+      );
+      const estimatedSubtotal = Number(group.estimated_amount_minor);
+      statements.push(
+        this.repositories.purchaseBatches.insertGroupResultStatement({
+          purchaseBatchId,
+          groupingId: result.groupingId,
+          committedQuantity: committed,
+          purchasedQuantity: result.purchasedQuantity,
+          actualUnitPriceMinor: result.actualUnitPriceMinor,
+          estimatedSubtotalMinor: estimatedSubtotal,
+        }),
+        ...allocations.map((allocation) =>
+          this.repositories.purchaseBatches.insertAllocationStatement({
+            commitmentId: allocation.id,
+            purchaseBatchId,
+            groupingId: result.groupingId,
+            orderItemId: allocation.orderItemId,
+            committedQuantity: allocation.quantity,
+            fulfilledQuantity: allocation.fulfilledQuantity,
+            shortageQuantity: allocation.shortageQuantity,
+            finalAmountMinor: allocation.finalAmountMinor,
+          }),
+        ),
+      );
+      committedQuantity += committed;
+      purchasedQuantity += result.purchasedQuantity;
+      estimatedTotalMinor += estimatedSubtotal;
+      actualTotalMinor += result.purchasedQuantity * result.actualUnitPriceMinor;
+      resultSummaries.push({
+        groupingId: result.groupingId,
+        committedQuantity: committed,
+        purchasedQuantity: result.purchasedQuantity,
+        shortageQuantity: committed - result.purchasedQuantity,
+        actualUnitPriceMinor: result.actualUnitPriceMinor,
+      });
+    }
+    try {
+      await this.repositories.batch([
+        this.repositories.purchaseBatches.insertFinalizationStatement({
+          purchaseBatchId,
+          idempotencyKey: input.idempotencyKey,
+          canonicalPayload,
+          receiptId: input.receiptId,
+          committedQuantity,
+          purchasedQuantity,
+          shortageQuantity: committedQuantity - purchasedQuantity,
+          estimatedTotalMinor,
+          actualTotalMinor,
+          actorUserId: actor.id,
+        }),
+        ...statements,
+        this.repositories.purchaseBatches.finalizeAuditStatement({
+          id: `purchase-finalize-${purchaseBatchId}`,
+          purchaseBatchId,
+          communityId,
+          actorUserId: actor.id,
+          metadata: {
+            event: 'PURCHASE_BATCH_FINALIZED',
+            results: resultSummaries,
+            committedQuantity,
+            purchasedQuantity,
+            shortageQuantity: committedQuantity - purchasedQuantity,
+            estimatedTotalMinor,
+            actualTotalMinor,
+            receiptId: input.receiptId,
+          },
+        }),
+      ]);
+    } catch (error) {
+      const winner =
+        await this.repositories.purchaseBatches.findFinalization(purchaseBatchId);
+      if (winner) {
+        if (
+          winner.idempotency_key === input.idempotencyKey &&
+          winner.canonical_payload === canonicalPayload
+        )
+          return { finalized: false, purchaseBatch: await this.detail(communityId, purchaseBatchId) };
+        throw new ApiError(
+          409,
+          winner.idempotency_key === input.idempotencyKey
+            ? 'IDEMPOTENCY_CONFLICT'
+            : 'PURCHASE_BATCH_FINALIZE_CONFLICT',
+          '此採購批次已有不同的結算結果',
+        );
+      }
+      throw error;
+    }
+    return { finalized: true, purchaseBatch: await this.detail(communityId, purchaseBatchId) };
   }
 }

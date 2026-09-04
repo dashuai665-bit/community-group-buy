@@ -34,10 +34,14 @@ type Grouping = {
   estimated_amount_minor: number;
   currency: string;
   oldest_order_time: string | null;
+  purchased_quantity?: number | null;
+  shortage_quantity?: number | null;
+  actual_unit_price_minor?: number | null;
 };
 type PurchaseBatch = {
   id: string;
-  status: 'ready' | 'purchasing';
+  status: 'ready' | 'purchasing' | 'finalized';
+  display_status?: 'ready' | 'purchasing' | 'finalized';
   group_count: number;
   total_quantity: number;
   estimated_total_minor: number;
@@ -55,6 +59,12 @@ type PurchaseBatchDetail = PurchaseBatch & {
   groupCount: number;
   totalQuantity: number;
   estimatedTotalMinor: number;
+  finalization: null | {
+    purchasedQuantity: number;
+    shortageQuantity: number;
+    actualTotalMinor: number;
+    finalizedAt: string;
+  };
 };
 export function CommunityOperations({ communityId }: { communityId: string }) {
   const [data, setData] = useState<{
@@ -74,7 +84,10 @@ export function CommunityOperations({ communityId }: { communityId: string }) {
     [purchaseMessage, setPurchaseMessage] = useState(''),
     [purchaseDetail, setPurchaseDetail] = useState<PurchaseBatchDetail | null>(
       null,
-    );
+    ),
+    [purchaseResults, setPurchaseResults] = useState<
+      Record<string, { purchasedQuantity: string; actualUnitPriceMinor: string }>
+    >({});
   async function showPurchaseBatch(id: string) {
     setPurchaseAction(`detail-${id}`);
     try {
@@ -82,6 +95,19 @@ export function CommunityOperations({ communityId }: { communityId: string }) {
         `/api/admin/communities/${communityId}/purchase-batches/${id}`,
       );
       setPurchaseDetail(result.purchaseBatch);
+      setPurchaseResults(
+        Object.fromEntries(
+          result.purchaseBatch.groups.map((group) => [
+            group.id,
+            {
+              purchasedQuantity: String(group.committed_quantity),
+              actualUnitPriceMinor: String(
+                Math.round(group.estimated_amount_minor / group.committed_quantity),
+              ),
+            },
+          ]),
+        ),
+      );
     } catch (cause) {
       setPurchaseMessage(
         cause instanceof Error ? cause.message : '載入採購批次失敗',
@@ -134,6 +160,35 @@ export function CommunityOperations({ communityId }: { communityId: string }) {
       setPurchaseMessage(
         cause instanceof Error ? cause.message : '無法開始採購',
       );
+    } finally {
+      setPurchaseAction('');
+    }
+  }
+  async function finalizePurchaseBatch() {
+    if (!purchaseDetail) return;
+    setPurchaseAction(`finalize-${purchaseDetail.id}`);
+    setPurchaseMessage('');
+    try {
+      const result = await api<{ purchaseBatch: PurchaseBatchDetail }>(
+        `/api/admin/communities/${communityId}/purchase-batches/${purchaseDetail.id}/finalize`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            idempotencyKey: `finalize-${crypto.randomUUID()}`,
+            receiptId: null,
+            results: purchaseDetail.groups.map((group) => ({
+              groupingId: group.id,
+              purchasedQuantity: Number(purchaseResults[group.id]?.purchasedQuantity),
+              actualUnitPriceMinor: Number(purchaseResults[group.id]?.actualUnitPriceMinor),
+            })),
+          }),
+        },
+      );
+      setPurchaseDetail(result.purchaseBatch);
+      setPurchaseMessage('採購結果已完成並固定。');
+      await reloadPurchases();
+    } catch (cause) {
+      setPurchaseMessage(cause instanceof Error ? cause.message : '無法完成採購結果');
     } finally {
       setPurchaseAction('');
     }
@@ -353,7 +408,11 @@ export function CommunityOperations({ communityId }: { communityId: string }) {
               <article key={batch.id}>
                 <div>
                   <span className="status-pill">
-                    {batch.status === 'ready' ? '待採購' : '採購中'}
+                    {(batch.display_status ?? batch.status) === 'ready'
+                      ? '待採購'
+                      : (batch.display_status ?? batch.status) === 'finalized'
+                        ? '採購結果已確認'
+                        : '採購中'}
                   </span>
                   <h3>{batch.id}</h3>
                   <p>
@@ -393,15 +452,46 @@ export function CommunityOperations({ communityId }: { communityId: string }) {
               {purchaseDetail.groupCount} 團 · {purchaseDetail.totalQuantity} 件
             </p>
             {purchaseDetail.groups.map((group) => (
-              <p key={group.id}>
-                <strong>{group.product_name}</strong> ·{' '}
-                {group.committed_quantity} {group.unit_label} ·{' '}
-                {formatMoney(group.estimated_amount_minor, group.currency)}
-              </p>
+              <div key={group.id} className="purchase-result-row">
+                <p>
+                  <strong>{group.product_name}</strong> · 需求 {group.committed_quantity}{' '}
+                  {group.unit_label} · 預估{' '}
+                  {formatMoney(group.estimated_amount_minor, group.currency)}
+                </p>
+                {purchaseDetail.status === 'purchasing' ? (
+                  <div className="purchase-result-inputs">
+                    <label>
+                      實際數量
+                      <input type="number" min="0" max={group.committed_quantity}
+                        value={purchaseResults[group.id]?.purchasedQuantity ?? ''}
+                        onChange={(event) => setPurchaseResults((current) => ({ ...current, [group.id]: { ...current[group.id], purchasedQuantity: event.target.value } }))} />
+                    </label>
+                    <label>
+                      實際單價（最小貨幣單位）
+                      <input type="number" min="0"
+                        value={purchaseResults[group.id]?.actualUnitPriceMinor ?? ''}
+                        onChange={(event) => setPurchaseResults((current) => ({ ...current, [group.id]: { ...current[group.id], actualUnitPriceMinor: event.target.value } }))} />
+                    </label>
+                    <small>缺貨預覽：{Math.max(0, group.committed_quantity - Number(purchaseResults[group.id]?.purchasedQuantity || 0))} {group.unit_label}</small>
+                  </div>
+                ) : group.purchased_quantity != null ? (
+                  <p>實際 {group.purchased_quantity} · 缺貨 {group.shortage_quantity} · 單價 {formatMoney(group.actual_unit_price_minor ?? 0, group.currency)}</p>
+                ) : null}
+              </div>
             ))}
             <strong>
               預估合計 {formatMoney(purchaseDetail.estimatedTotalMinor, 'TWD')}
             </strong>
+            {purchaseDetail.status === 'purchasing' ? (
+              <>
+                <p className="info-note">收據檔案儲存尚待部署 storage adapter；目前只保存管理員專用 metadata。</p>
+                <button type="button" disabled={purchaseAction === `finalize-${purchaseDetail.id}`} onClick={finalizePurchaseBatch}>
+                  {purchaseAction === `finalize-${purchaseDetail.id}` ? '確認中…' : '確認採購結果'}
+                </button>
+              </>
+            ) : purchaseDetail.finalization ? (
+              <p>實際合計 {formatMoney(purchaseDetail.finalization.actualTotalMinor, 'TWD')} · 缺貨 {purchaseDetail.finalization.shortageQuantity} 件 · {purchaseDetail.finalization.finalizedAt}</p>
+            ) : null}
           </div>
         ) : null}
       </section>

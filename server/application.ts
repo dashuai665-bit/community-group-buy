@@ -199,7 +199,7 @@ export function createApplication(
         });
       }
       const purchaseBatchMatch = path.match(
-        /^\/api\/admin\/communities\/([^/]+)\/purchase-batches(?:\/([^/]+))?(?:\/(start))?$/,
+        /^\/api\/admin\/communities\/([^/]+)\/purchase-batches(?:\/([^/]+))?(?:\/(start|finalize|receipts))?$/,
       );
       if (purchaseBatchMatch && request.method === 'GET' && !purchaseBatchMatch[2])
         return Response.json(
@@ -238,13 +238,51 @@ export function createApplication(
         return Response.json(result, { status: result.created ? 201 : 200 });
       }
       if (purchaseBatchMatch && request.method === 'POST' && purchaseBatchMatch[2] && purchaseBatchMatch[3])
-        return Response.json({
-          purchaseBatch: await purchaseBatches.start(
-            await appUser(request),
-            validateId(purchaseBatchMatch[1], 'communityId'),
-            validateId(purchaseBatchMatch[2], 'purchaseBatchId'),
-          ),
-        });
+        {
+          const userId = await appUser(request);
+          const communityId = validateId(purchaseBatchMatch[1], 'communityId');
+          const purchaseBatchId = validateId(purchaseBatchMatch[2], 'purchaseBatchId');
+          if (purchaseBatchMatch[3] === 'start')
+            return Response.json({
+              purchaseBatch: await purchaseBatches.start(userId, communityId, purchaseBatchId),
+            });
+          const body = await readPurchaseBatchObject(request);
+          if (purchaseBatchMatch[3] === 'receipts') {
+            if (
+              typeof body.originalFilename !== 'string' ||
+              typeof body.mimeType !== 'string'
+            )
+              throw new ApiError(400, 'VALIDATION_ERROR', '收據 metadata 格式不正確');
+            return Response.json({
+              receipt: await purchaseBatches.createReceipt(userId, communityId, purchaseBatchId, {
+                originalFilename: body.originalFilename,
+                mimeType: body.mimeType,
+                sizeBytes: Number(body.sizeBytes),
+              }),
+            }, { status: 201 });
+          }
+          if (!Array.isArray(body.results))
+            throw new ApiError(400, 'VALIDATION_ERROR', 'results 格式不正確');
+          const key = typeof body.idempotencyKey === 'string' ? body.idempotencyKey : '';
+          if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(key))
+            throw new ApiError(400, 'VALIDATION_ERROR', 'idempotencyKey 格式不正確');
+          const results = body.results.map((raw) => {
+            if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+              throw new ApiError(400, 'VALIDATION_ERROR', '採購結果格式不正確');
+            const result = raw as Record<string, unknown>;
+            return {
+              groupingId: validateId(result.groupingId, 'groupingId'),
+              purchasedQuantity: Number(result.purchasedQuantity),
+              actualUnitPriceMinor: Number(result.actualUnitPriceMinor),
+            };
+          });
+          const result = await purchaseBatches.finalize(userId, communityId, purchaseBatchId, {
+            results,
+            receiptId: body.receiptId == null ? null : validateId(body.receiptId, 'receiptId'),
+            idempotencyKey: key,
+          });
+          return Response.json(result);
+        }
       if (request.method === 'GET' && path === '/api/me/communities') {
         const userId = await appUser(request);
         const actor = await requireActiveUser(repositories, userId);
