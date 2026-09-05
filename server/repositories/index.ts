@@ -160,6 +160,18 @@ export interface PurchaseFinalizationRow {
   finalized_by_user_id: string;
   finalized_at: string;
 }
+export interface AuditListRow {
+  id: string;
+  actor_user_id: string;
+  community_id: string | null;
+  action_type: string;
+  target_type: string;
+  target_id: string | null;
+  metadata: string | null;
+  created_at: string;
+  actor_display_name: string | null;
+  community_name: string | null;
+}
 
 class RepositoryBase {
   protected readonly context: RepositoryContext;
@@ -425,6 +437,43 @@ export class AuditLogRepository extends RepositoryBase {
         ).all()
       ).results ?? []
     );
+  }
+  async listPage(input: {
+    communityId?: string;
+    event?: string;
+    limit: number;
+    offset: number;
+  }) {
+    const predicates: string[] = [];
+    const values: unknown[] = [];
+    if (input.communityId) {
+      predicates.push('a.community_id = ?');
+      values.push(input.communityId);
+    }
+    if (input.event) {
+      predicates.push("(a.action_type = ? OR json_extract(a.metadata, '$.event') = ?)");
+      values.push(input.event, input.event);
+    }
+    const where = predicates.length ? `WHERE ${predicates.join(' AND ')}` : '';
+    const rows = (
+      await this.statement(
+        `SELECT a.id,a.actor_user_id,a.community_id,a.action_type,a.target_type,a.target_id,a.metadata,a.created_at,
+          p.display_name actor_display_name,c.name community_name
+         FROM audit_logs a
+         LEFT JOIN user_profiles p ON p.user_id=a.actor_user_id
+         LEFT JOIN communities c ON c.id=a.community_id
+         ${where}
+         ORDER BY a.created_at DESC,a.id DESC LIMIT ? OFFSET ?`,
+        ...values,
+        input.limit,
+        input.offset,
+      ).all<AuditListRow>()
+    ).results ?? [];
+    const count = await this.statement(
+      `SELECT COUNT(*) total FROM audit_logs a ${where}`,
+      ...values,
+    ).first<{ total: number }>();
+    return { rows, total: Number(count?.total ?? 0) };
   }
 }
 

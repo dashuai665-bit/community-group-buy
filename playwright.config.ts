@@ -7,7 +7,7 @@ export default defineConfig({
     timeout: 5_000,
   },
   use: {
-    baseURL: 'http://localhost:3000',
+    baseURL: 'http://127.0.0.1:3211',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },
@@ -18,9 +18,9 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'pnpm dev',
-    url: 'http://localhost:3000',
-    reuseExistingServer: true,
+    command: 'node tests/e2e/support/authenticated-server.mjs',
+    url: 'http://127.0.0.1:3211',
+    reuseExistingServer: false,
     timeout: 120_000,
   },
 });

@@ -11,6 +11,7 @@ const migrationUrls = [
   new URL('../../drizzle/0004_purchase_batches.sql', import.meta.url),
   new URL('../../drizzle/0005_purchase_finalization.sql', import.meta.url),
   new URL('../../drizzle/0006_order_fulfillment.sql', import.meta.url),
+  new URL('../../drizzle/0007_audit_logs_append_only.sql', import.meta.url),
 ];
 
 async function createMigratedDatabase() {
@@ -67,6 +68,17 @@ test('Phase 4B order idempotency、item linkage、pickup 與 status constraints 
   assert.throws(()=>database.prepare("INSERT INTO order_items(id,order_id,offering_id,product_id,product_name_snapshot,unit_label_snapshot,unit_price_minor,quantity,estimated_subtotal_minor) VALUES ('i','missing','o','p','米','包',100,1,100)").run(),/FOREIGN KEY/);
   database.prepare("INSERT INTO pickup_records(id,order_id,community_id) VALUES ('pickup','order-1','A')").run();
   assert.throws(()=>database.prepare("UPDATE pickup_records SET status='unknown'").run(),/CHECK/);
+  database.close();
+});
+
+test('Phase 6F audit log 是 append-only', async () => {
+  const database = await createMigratedDatabase();
+  seedUserAndCommunities(database);
+  database.prepare("INSERT INTO audit_logs(id,actor_user_id,community_id,action_type,target_type,target_id) VALUES('audit-1','user-1','A','community_join','community','A')").run();
+  assert.throws(() => database.prepare("UPDATE audit_logs SET target_id='B' WHERE id='audit-1'").run(), /AUDIT_LOG_IMMUTABLE/);
+  assert.throws(() => database.prepare("DELETE FROM audit_logs WHERE id='audit-1'").run(), /AUDIT_LOG_IMMUTABLE/);
+  assert.equal(database.prepare("SELECT target_id FROM audit_logs WHERE id='audit-1'").get().target_id, 'A');
+  assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
   database.close();
 });
 

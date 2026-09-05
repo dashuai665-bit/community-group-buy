@@ -21,6 +21,7 @@ import { OrderService, PickupService } from './services/orders.ts';
 import { AdminOperationsService } from './services/admin-operations.ts';
 import { GroupingService } from './services/groupings.ts';
 import { PurchaseBatchService } from './services/purchase-batches.ts';
+import { AuditLogService } from './services/audit-logs.ts';
 
 export interface AuthenticationAdapter {
   authenticate(request: Request): Promise<AuthenticatedProviderIdentity | null>;
@@ -116,6 +117,7 @@ export function createApplication(
   const operations = new AdminOperationsService(repositories);
   const groupings = new GroupingService(repositories);
   const purchaseBatches = new PurchaseBatchService(repositories);
+  const auditLogs = new AuditLogService(repositories);
 
   async function appUser(request: Request): Promise<string | null> {
     const identity = await authentication.authenticate(request);
@@ -126,6 +128,26 @@ export function createApplication(
     try {
       const url = new URL(request.url);
       const path = url.pathname;
+      const auditQuery = () => {
+        const page = Number(url.searchParams.get('page') ?? 1);
+        const limit = Number(url.searchParams.get('limit') ?? 50);
+        if (!Number.isSafeInteger(page) || page < 1 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+          throw new ApiError(422, 'VALIDATION_ERROR', '分頁參數不正確');
+        const event = url.searchParams.get('event')?.trim();
+        if (event && (event.length > 100 || Array.from(event).some((character) => character.charCodeAt(0) < 32)))
+          throw new ApiError(422, 'VALIDATION_ERROR', 'event 格式不正確');
+        return { page, limit, event: event || undefined };
+      };
+      const auditMatch = path.match(/^\/api\/admin\/communities\/([^/]+)\/audit-logs$/);
+      if (request.method === 'GET' && auditMatch)
+        return Response.json(await auditLogs.community(await appUser(request), validateId(auditMatch[1], 'communityId'), auditQuery()));
+      if (request.method === 'GET' && path === '/api/admin/audit-logs') {
+        const communityId = url.searchParams.get('communityId');
+        return Response.json(await auditLogs.platform(await appUser(request), {
+          ...auditQuery(),
+          communityId: communityId ? validateId(communityId, 'communityId') : undefined,
+        }));
+      }
       if (request.method === 'GET' && path === '/api/communities') {
         const rows = await repositories.communities.listActive();
         return Response.json({
