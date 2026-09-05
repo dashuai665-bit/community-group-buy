@@ -3,14 +3,17 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
-import { join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { createApplication } from '../../../server/application.ts';
 import { Repositories } from '../../../server/repositories/index.ts';
 import { SQLiteD1Database } from '../../helpers/sqlite-database.mjs';
 
 const upstreamPort = 3210;
 const proxyPort = 3211;
-const persistencePath = mkdtempSync(join(tmpdir(), 'linli-e2e-'));
+const persistencePath = resolve(process.env.E2E_FIXTURE_DIR ?? mkdtempSync(join(tmpdir(), 'linli-e2e-')));
+// Cleanup must stay inside a generated run directory, even if the environment is overridden.
+if (dirname(persistencePath).toLowerCase() !== resolve(tmpdir()).toLowerCase() || !/^linli-e2e-[A-Za-z0-9]{6}$/.test(basename(persistencePath)))
+  throw new Error('Invalid isolated E2E fixture directory');
 const vite = spawn(process.execPath, ['node_modules/vinext/dist/cli.js', 'dev', '--port', String(upstreamPort), '--strictPort'], {
   cwd: process.cwd(), stdio: 'inherit',
   env: { ...process.env, E2E_PERSIST_PATH: persistencePath },
@@ -24,7 +27,7 @@ async function waitForUpstream() {
   throw new Error('E2E upstream did not start');
 }
 await waitForUpstream();
-const fixtureDb = new SQLiteD1Database(new DatabaseSync(':memory:'));
+const fixtureDb = new SQLiteD1Database(new DatabaseSync(join(persistencePath, 'fixture.sqlite')));
 const database = fixtureDb.database;
 for (const migration of ['0000_melted_otto_octavius.sql','0001_sticky_taskmaster.sql','0002_magical_gamma_corps.sql','0003_bumpy_cannonball.sql','0004_purchase_batches.sql','0005_purchase_finalization.sql','0006_order_fulfillment.sql','0007_audit_logs_append_only.sql'])
   database.exec(readFileSync(join(process.cwd(), 'drizzle', migration), 'utf8'));
@@ -36,6 +39,16 @@ INSERT INTO community_members(id,user_id,community_id,role) VALUES('e2e-mr','e2e
 INSERT INTO platform_roles(user_id,role) VALUES('e2e-platform','platform_admin');
 INSERT INTO products(id,name,description,source_type,unit_label) VALUES('e2e-p1','測試白米','完整交易測試商品','manual','包'),('e2e-p0','零履約麵條','零履約測試商品','manual','袋');
 INSERT INTO community_product_offerings(id,community_id,product_id,status,price_minor,batch_threshold,min_quantity_per_order,max_quantity_per_order) VALUES('e2e-offer-1','e2e-c1','e2e-p1','active',100,10,1,20),('e2e-offer-0','e2e-c1','e2e-p0','active',50,5,1,10);`);
+
+// A separate community's historical audit rows exercise pagination without polluting the live journey.
+const auditSeed = database.prepare(`INSERT INTO audit_logs(id,actor_user_id,community_id,action_type,target_type,target_id,metadata,created_at)
+  VALUES(?,'e2e-other-admin','e2e-c2','pickup_ready','order',?,?,?)`);
+for (let index = 0; index < 23; index += 1) {
+  auditSeed.run('e2e-audit-' + index, 'historical-order-' + index, JSON.stringify({
+    event: index >= 21 ? 'ORDER_HANDED_OVER' : 'CASH_PAYMENT_CONFIRMED', amountMinor: 840,
+    phone: 'audit-private-phone', storageKey: 'audit-private-storage', token: 'audit-private-token',
+  }), '2026-01-01 00:00:' + String(index).padStart(2, '0'));
+}
 
 const identities = { resident:'e2e-resident', admin:'e2e-admin', otherAdmin:'e2e-other-admin', platform:'e2e-platform' };
 const fixtureApp = createApplication(new Repositories({ db: fixtureDb }), {

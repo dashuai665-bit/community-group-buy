@@ -1,4 +1,10 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { defineConfig, devices } from '@playwright/test';
+
+// Shared only by this Playwright run and its external test proxy.
+process.env.E2E_FIXTURE_DIR ??= mkdtempSync(join(tmpdir(), 'linli-e2e-'));
 
 export default defineConfig({
   testDir: './tests/e2e',

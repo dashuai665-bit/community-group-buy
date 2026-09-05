@@ -1,4 +1,4 @@
-﻿import { test, expect } from '@playwright/test';
+﻿import { test, expect } from './authenticated-fixture';
 
 import type { Page } from '@playwright/test';
 
@@ -25,7 +25,7 @@ const routes = [
   '/profile/communities',
   '/profile/wishes',
   '/admin',
-  '/admin/communities/fixture-community',
+  '/admin/communities/e2e-c1',
 ];
 
 const viewports = [
@@ -46,7 +46,16 @@ for (const viewport of viewports) {
     });
 
     for (const route of routes) {
-      test(`${route} loads without horizontal overflow`, async ({ page }) => {
+      test(`${route} loads without horizontal overflow`, async ({
+        residentPage,
+        adminPage,
+      }) => {
+        // Normal page rendering needs an identity; authorization failures have separate coverage.
+        const page = route.startsWith('/admin') ? adminPage : residentPage;
+        expect(page.viewportSize()).toEqual({
+          width: viewport.width,
+          height: viewport.height,
+        });
         const pageErrors: string[] = [];
 
         page.on('pageerror', (error) => {
@@ -54,7 +63,7 @@ for (const viewport of viewports) {
         });
 
         const response = await page.goto(route, {
-          waitUntil: 'networkidle',
+          waitUntil: 'domcontentloaded',
         });
 
         expect(response, `${route} should return a response`).not.toBeNull();
@@ -63,7 +72,8 @@ for (const viewport of viewports) {
           `${route} returned HTTP ${response?.status()}`,
         ).toBeLessThan(500);
 
-        await expect(page.locator('body')).toBeVisible();
+        await expect(page.locator('main')).toBeVisible();
+        await expect(page.getByRole('status')).toHaveCount(0);
 
         const overflow = await page.evaluate(() => {
           const root = document.documentElement;
@@ -92,7 +102,7 @@ test('社區頁可以開啟', async ({ page }) => {
   await expect(page.locator('body')).toBeVisible();
 });
 
-test('會員功能頁可以開啟', async ({ page }) => {
+test('會員功能頁可以開啟', async ({ residentPage: page }) => {
   for (const route of [
     '/orders',
     '/profile',
@@ -104,16 +114,21 @@ test('會員功能頁可以開啟', async ({ page }) => {
   }
 });
 
-test('管理入口可以開啟', async ({ page }) => {
+test('管理入口可以開啟', async ({ adminPage: page }) => {
   const response = await page.goto('/admin');
   expect(response?.status()).toBeLessThan(500);
   await expect(page.locator('body')).toBeVisible();
 });
 
-test('管理頁在未授權或 fixture 不存在時安全呈現', async ({ page }) => {
-  await safeGoto(page, '/admin');
-  await expect(page.getByRole('heading', { name: '管理工作台' })).toBeVisible();
-  await expect(page.getByText(/正在整理營運資料|沒有管理權限/)).toBeVisible();
+test('管理頁在未授權或 fixture 不存在時安全呈現', async ({
+  page,
+  residentPage,
+}) => {
+  await safeGoto(residentPage, '/admin');
+  await expect(
+    residentPage.getByRole('heading', { name: '管理工作台' }),
+  ).toBeVisible();
+  await expect(residentPage.getByText(/沒有管理權限/)).toBeVisible();
   await safeGoto(page, '/admin/communities/fixture-community');
   await expect(
     page.getByText(
