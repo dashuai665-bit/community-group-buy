@@ -78,6 +78,15 @@ type Pickup = {
   completionState: 'procurement_pending' | 'no_pickup_required' | 'ready_for_payment' | 'paid_pending_pickup' | 'completed';
   items: Array<{ product_name_snapshot: string; fulfilled_quantity: number }>;
 };
+type AuditLog = {
+  id: string;
+  timestamp: string;
+  event: string;
+  actor: { displayName: string };
+  target: { type: string; id: string | null };
+  metadata: Record<string, string | number | boolean | null>;
+};
+type AuditPage = { page: number; limit: number; total: number; auditLogs: AuditLog[] };
 export function CommunityOperations({ communityId }: { communityId: string }) {
   const [data, setData] = useState<{
       summary: Summary;
@@ -86,6 +95,7 @@ export function CommunityOperations({ communityId }: { communityId: string }) {
       groupings: Grouping[];
       purchases: PurchaseOperations;
       pickups: Pickup[];
+      audits: AuditPage;
     } | null>(null),
     [error, setError] = useState(''),
     [formationReason, setFormationReason] = useState<Record<string, string>>(
@@ -101,7 +111,16 @@ export function CommunityOperations({ communityId }: { communityId: string }) {
     [purchaseResults, setPurchaseResults] = useState<
       Record<string, { purchasedQuantity: string; actualUnitPriceMinor: string }>
     >({}),
-    [pickupAction, setPickupAction] = useState('');
+    [pickupAction, setPickupAction] = useState(''),
+    [auditEvent, setAuditEvent] = useState(''),
+    [auditPage, setAuditPage] = useState(1);
+  async function loadAudits(page: number, event = auditEvent) {
+    const params = new URLSearchParams({ page: String(page), limit: '20' });
+    if (event) params.set('event', event);
+    const result = await api<AuditPage>(`/api/admin/communities/${communityId}/audit-logs?${params}`);
+    setAuditPage(page);
+    setData((current) => current ? { ...current, audits: result } : current);
+  }
   async function reloadPickups() {
     const result = await api<{ pickups: Pickup[] }>(`/api/admin/communities/${communityId}/pickups`);
     setData((current) => current ? { ...current, pickups: result.pickups } : current);
@@ -261,8 +280,9 @@ export function CommunityOperations({ communityId }: { communityId: string }) {
         `/api/admin/communities/${communityId}/purchase-batches`,
       ),
       api<{ pickups: Pickup[] }>(`/api/admin/communities/${communityId}/pickups`),
+      api<AuditPage>(`/api/admin/communities/${communityId}/audit-logs?limit=20&page=1`),
     ])
-      .then(([summary, orders, wishes, groupings, purchases, pickups]) =>
+      .then(([summary, orders, wishes, groupings, purchases, pickups, audits]) =>
         setData({
           summary,
           orders: orders.orders,
@@ -270,6 +290,7 @@ export function CommunityOperations({ communityId }: { communityId: string }) {
           groupings: groupings.groupings,
           purchases,
           pickups: pickups.pickups,
+          audits,
         }),
       )
       .catch((e) =>
@@ -531,6 +552,47 @@ export function CommunityOperations({ communityId }: { communityId: string }) {
             ) : null}
           </div>
         ) : null}
+      </section>
+      <section className="ops-card">
+        <h2>操作紀錄</h2>
+        <label>
+          事件篩選
+          <select value={auditEvent} onChange={(event) => {
+            const value = event.target.value;
+            setAuditEvent(value);
+            void loadAudits(1, value);
+          }}>
+            <option value="">全部</option>
+            <option value="batch_formed">成團</option>
+            <option value="PURCHASE_BATCH_CREATED">採購批次建立</option>
+            <option value="PURCHASE_BATCH_STARTED">開始採購</option>
+            <option value="PURCHASE_BATCH_FINALIZED">採購完成</option>
+            <option value="CASH_PAYMENT_CONFIRMED">收款</option>
+            <option value="ORDER_HANDED_OVER">面交</option>
+          </select>
+        </label>
+        {!data.audits.auditLogs.length ? (
+          <EmptyState title="目前沒有操作紀錄" description="營運操作完成後會顯示在這裡。" />
+        ) : (
+          <div className="admin-order-list">
+            {data.audits.auditLogs.map((entry) => (
+              <article key={entry.id}>
+                <div>
+                  <span className="status-pill">{entry.event}</span>
+                  <h3>{entry.actor.displayName}</h3>
+                  <p>{entry.target.type}{entry.target.id ? ` · ${entry.target.id.slice(0, 12)}` : ''}</p>
+                  {Object.keys(entry.metadata).length ? <small>{Object.entries(entry.metadata).filter(([key]) => key !== 'event').map(([key, value]) => `${key}: ${String(value)}`).join(' · ')}</small> : null}
+                </div>
+                <time dateTime={entry.timestamp}>{entry.timestamp}</time>
+              </article>
+            ))}
+          </div>
+        )}
+        <div className="pagination-actions">
+          <button type="button" disabled={auditPage <= 1} onClick={() => void loadAudits(auditPage - 1)}>上一頁</button>
+          <span>第 {auditPage} 頁</span>
+          <button type="button" disabled={auditPage * data.audits.limit >= data.audits.total} onClick={() => void loadAudits(auditPage + 1)}>下一頁</button>
+        </div>
       </section>
       <section className="ops-card">
         <h2>社區基本資訊</h2>
