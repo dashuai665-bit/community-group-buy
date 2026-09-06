@@ -80,11 +80,11 @@ test('authenticated resident and admin complete shortage transaction and audit j
   await adminPage.getByLabel('實際單價（最小貨幣單位）').fill('120');
   await adminPage.getByRole('button', { name: '確認採購結果' }).click();
   await expect(adminPage.getByText('採購結果已完成並固定。')).toBeVisible();
-  await expect(adminPage.getByText(/實際合計 NT\$8.*缺貨 3 件/)).toBeVisible();
+  await expect(adminPage.getByText(/實際合計 NT\$8\.40.*缺貨 3 件/)).toBeVisible();
 
   await residentPage.goto(`/orders/${orderId}`);
   await expect(
-    residentPage.getByText(/可取得 7、缺貨 3、最終應付 NT\$8/),
+    residentPage.getByText(/可取得 7、缺貨 3、最終應付 NT\$8\.40$/),
   ).toBeVisible();
   await expect(residentPage.getByText(/storage|管理員 ID/i)).toHaveCount(0);
 
@@ -130,7 +130,7 @@ test('authenticated resident and admin complete shortage transaction and audit j
   await residentPage.goto(`/orders/${orderId}`);
   await expect(residentPage.getByText('已完成取貨').first()).toBeVisible();
   await expect(
-    residentPage.getByText(/可取得 7、缺貨 3、最終應付 NT\$8/),
+    residentPage.getByText(/可取得 7、缺貨 3、最終應付 NT\$8\.40$/),
   ).toBeVisible();
 
   await adminPage.goto('/admin/communities/e2e-c1');

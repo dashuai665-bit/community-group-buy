@@ -11,7 +11,6 @@ import {
 } from './services/index.ts';
 import {
   CommunityOfferingService,
-  GroupBuyBatchService,
   ProductCatalogService,
   ProductWishService,
   type OfferingStatus,
@@ -31,17 +30,6 @@ const idPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 function validateId(value: unknown, field = 'id'): string {
   if (typeof value !== 'string' || !idPattern.test(value))
     throw new ApiError(422, 'VALIDATION_ERROR', `${field} 格式不正確`);
-  return value;
-}
-function validateProviderUserId(value: unknown): string {
-  if (
-    typeof value !== 'string' ||
-    value.trim().length === 0 ||
-    value.length > 255 ||
-    Array.from(value).some((character) => character.charCodeAt(0) < 32)
-  ) {
-    throw new ApiError(422, 'VALIDATION_ERROR', 'providerUserId 格式不正確');
-  }
   return value;
 }
 async function readObject(request: Request): Promise<Record<string, unknown>> {
@@ -110,7 +98,6 @@ export function createApplication(
   const profiles = new ProfileService(repositories);
   const products = new ProductCatalogService(repositories);
   const offerings = new CommunityOfferingService(repositories);
-  const batches = new GroupBuyBatchService(repositories);
   const wishes = new ProductWishService(repositories);
   const orders = new OrderService(repositories);
   const pickups = new PickupService(repositories);
@@ -584,17 +571,9 @@ export function createApplication(
         /^\/api\/communities\/([^/]+)\/offerings\/([^/]+)\/commitments$/,
       );
       if (request.method === 'POST' && commitmentMatch) {
-        const body = await readObject(request);
-        const result = await batches.commitQuantity(
-          await appUser(request),
-          validateId(commitmentMatch[1], 'communityId'),
-          validateId(commitmentMatch[2], 'offeringId'),
-          validatePositiveInteger(body.quantity, 'quantity'),
-          body.idempotencyKey === undefined
-            ? undefined
-            : validateId(body.idempotencyKey, 'idempotencyKey'),
-        );
-        return Response.json({ batches: result }, { status: 201 });
+        await requireActiveUser(repositories, await appUser(request));
+        // Formal orders are the only public commitment write path.
+        throw new ApiError(403, 'LEGACY_COMMITMENTS_DISABLED', '此下單入口已停用，請使用正式訂單流程');
       }
       const wishCreateMatch = path.match(
         /^\/api\/communities\/([^/]+)\/wishes$/,
@@ -668,22 +647,9 @@ export function createApplication(
         return Response.json({ success: true });
       }
       if (request.method === 'POST' && path === '/api/me/identities/link') {
-        const userId = await appUser(request);
-        const body = await readObject(request);
-        const provider = body.provider;
-        if (
-          !['phone', 'line', 'google', 'email', 'chatgpt'].includes(
-            String(provider),
-          )
-        )
-          throw new ApiError(422, 'VALIDATION_ERROR', 'provider 不正確');
-        await identities.linkIdentityToAuthenticatedUser(userId, {
-          provider: provider as AuthenticatedProviderIdentity['provider'],
-          providerUserId: validateProviderUserId(body.providerUserId),
-          verified: body.verified === true,
-          email: typeof body.email === 'string' ? body.email : undefined,
-        });
-        return Response.json({ success: true });
+        await requireActiveUser(repositories, await appUser(request));
+        // Client assertions cannot prove ownership of another provider identity.
+        throw new ApiError(403, 'IDENTITY_LINKING_DISABLED', '目前不開放綁定登入身份');
       }
       if (request.method === 'GET' && path === '/api/me/profile') {
         const actor = await requireActiveUser(

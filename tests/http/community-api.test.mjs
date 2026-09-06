@@ -173,8 +173,8 @@ scenario('27 same phone text → no merge', async ({ handle, repositories }) => 
 scenario('28 link identity requires auth', async ({ handle }) => {
   assert.equal((await call(handle, '/api/me/identities/link', { method: 'POST', body: { provider: 'google', providerUserId: 'new-id', verified: true } })).status, 401);
 });
-scenario('29 cannot steal already-linked identity', async ({ handle }) => {
-  assert.equal((await call(handle, '/api/me/identities/link', { method: 'POST', token: 'active', body: { provider: 'chatgpt', providerUserId: 'target-sub', verified: true } })).status, 409);
+scenario('29 identity linking is disabled even for already-linked subjects', async ({ handle }) => {
+  assert.equal((await call(handle, '/api/me/identities/link', { method: 'POST', token: 'active', body: { provider: 'chatgpt', providerUserId: 'target-sub', verified: true } })).status, 403);
 });
 scenario('30 cannot unlink another user identity', async ({ handle }) => {
   assert.equal((await call(handle, '/api/me/identities/i-target/unlink', { method: 'POST', token: 'active' })).status, 403);
