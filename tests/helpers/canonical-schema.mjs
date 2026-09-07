@@ -9,6 +9,14 @@ export async function createCanonicalDatabase() {
   } catch (error) { db.close(); throw error; }
 }
 
+export async function createProductionBaselineDatabase() {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec(await readFile(new URL('../../migrations/0000_current_schema.sql', import.meta.url), 'utf8'));
+    return db;
+  } catch (error) { db.close(); throw error; }
+}
+
 // Tokenize instead of stripping whitespace inside literals. Only simple quoted
 // identifiers are unquoted; string literals, operators and token order survive.
 export function normalizeSql(sql) {

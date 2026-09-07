@@ -2,7 +2,7 @@
 // Cases adapted from schema.test.mjs; no application services or historical chain imported.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createCanonicalDatabase as createMigratedDatabase } from '../helpers/canonical-schema.mjs';
+import { createProductionBaselineDatabase as createMigratedDatabase } from '../helpers/canonical-schema.mjs';
 
 function seedUserAndCommunities(database) {
   database.prepare("INSERT INTO users (id) VALUES ('user-1')").run();

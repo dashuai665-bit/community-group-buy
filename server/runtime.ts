@@ -4,11 +4,13 @@ import { Repositories } from './repositories/index.ts';
 import { createProductionAuthentication } from './auth/adapter.ts';
 import { getProductionAuth } from './auth/runtime.ts';
 
-export function handleApiRequest(request: Request): Promise<Response> {
+export async function handleApiRequest(request: Request): Promise<Response> {
   const repositories = new Repositories({ db: env.DB });
   const productionAuthentication: AuthenticationAdapter = {
     authenticate: (authenticatedRequest) =>
       createProductionAuthentication(getProductionAuth(), env.DB).authenticate(authenticatedRequest),
   };
-  return createApplication(repositories, productionAuthentication)(request);
+  const response = await createApplication(repositories, productionAuthentication)(request);
+  response.headers.set('Cache-Control', 'no-store');
+  return response;
 }

@@ -79,6 +79,13 @@ pnpm build
 
 ## Git workflow
 
+## Production infrastructure
+
+Cloudflare Worker、staging/production D1、Google OAuth、migration、首次平台管理員與
+Time Travel 操作流程請依 [Production deployment runbook](docs/production-deployment.md)。
+正式 fresh D1 只使用 `migrations/`；`drizzle/0000–0008` 保留為歷史開發鏈，不再是
+production migration runner 的輸入。
+
 1. 從最新的 `main` 建立短期功能分支，例如 `codex/feature-name`。
 2. 每次提交只處理一個清楚目的，提交前執行 lint、型別檢查、測試與 build。
 3. 透過 Pull Request 審查後合併回 `main`，資料庫 migration 必須與對應程式碼一起審查。

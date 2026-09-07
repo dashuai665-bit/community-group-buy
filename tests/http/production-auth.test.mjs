@@ -136,6 +136,18 @@ test('production session cookie has strict host-only security attributes', async
   } finally { context.db.close(); }
 });
 
+test('production auth responses are never stored by shared caches', async () => {
+  const context = await setup();
+  try {
+    const response = await handleProductionAuth(context.auth, new Request('https://app.example.test/api/auth/sign-out', {
+      method: 'POST',
+      headers: { cookie: cookie(), origin: 'https://app.example.test', 'content-type': 'application/json' },
+      body: '{}',
+    }));
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+  } finally { context.db.close(); }
+});
+
 test('returnTo only accepts same-origin relative paths', () => {
   for (const value of ['/', '/products', '/orders/123', '/admin']) assert.equal(safeReturnTo(value), value);
   for (const value of ['https://evil.example', '//evil.example', 'javascript:alert(1)', 'data:text/html,x']) assert.equal(safeReturnTo(value), '/');

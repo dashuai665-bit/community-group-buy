@@ -28,6 +28,7 @@ export async function handleProductionAuth(auth: ProductionAuth, request: Reques
       headers.append('set-cookie', renameCookie(setCookie, internalSessionCookieName, externalSessionCookieName));
     }
   }
+  headers.set('Cache-Control', 'no-store');
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 

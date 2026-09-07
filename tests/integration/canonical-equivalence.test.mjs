@@ -29,6 +29,12 @@ test('canonical equals unmodified historical 0000-0008: SQL and all structural P
   assert.equal(inventory.trigger.length,22);
 });
 
+test('production migration baseline is byte-for-byte controlled by canonical', async () => {
+  const canonical = await readFile(new URL('../../database/canonical/current-schema.sql', import.meta.url), 'utf8');
+  const production = await readFile(new URL('../../migrations/0000_current_schema.sql', import.meta.url), 'utf8');
+  assert.equal(production, canonical);
+});
+
 test('normalization tolerates layout and identifier quoting without hiding constraints or literals', () => {
   assert.deepEqual(normalizeSql('CREATE TABLE `example` ( `id` TEXT CHECK (`id` != \'a b\'))'),normalizeSql('create table "example"(id text check(id!=\'a b\'))'));
   for (const [a,b] of [

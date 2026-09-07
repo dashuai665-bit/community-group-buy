@@ -7,8 +7,37 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "site-creator-d1",
-      "database_id": "00000000-0000-4000-8000-000000000000"
+      "database_name": "linli-coucou-local",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
     }
-  ]
+  ],
+  "env": {
+    "staging": {
+      "name": "linli-coucou-staging",
+      "vars": {
+        "APP_ORIGIN": "https://staging.example.invalid",
+        "GOOGLE_CLIENT_ID": "REPLACE_WITH_STAGING_GOOGLE_CLIENT_ID"
+      },
+      "d1_databases": [{
+        "binding": "DB",
+        "database_name": "linli-coucou-staging",
+        "database_id": "REPLACE_WITH_STAGING_D1_DATABASE_ID",
+        "migrations_dir": "migrations"
+      }]
+    },
+    "production": {
+      "name": "linli-coucou-production",
+      "vars": {
+        "APP_ORIGIN": "https://production.example.invalid",
+        "GOOGLE_CLIENT_ID": "REPLACE_WITH_PRODUCTION_GOOGLE_CLIENT_ID"
+      },
+      "d1_databases": [{
+        "binding": "DB",
+        "database_name": "linli-coucou-production",
+        "database_id": "REPLACE_WITH_PRODUCTION_D1_DATABASE_ID",
+        "migrations_dir": "migrations"
+      }]
+    }
+  }
 }
