@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { createApplication } from '../../server/application.ts';
 import { Repositories } from '../../server/repositories/index.ts';
@@ -149,6 +150,59 @@ scenario('formal order forms order-backed grouping and finalizes/payments preser
 test('orphan diagnostic returns zero for fresh migrated DB', async () => {
   const db = await createPhase4BDatabase();
   try { assert.equal(db.database.prepare(orphanCountSql).get().count, 0); } finally { db.close(); }
+});
+
+test('production authentication remains fail-closed while C3B is pending', async () => {
+  const runtimeSource = readFileSync(
+    new URL('../../server/runtime.ts', import.meta.url),
+    'utf8',
+  );
+  assert.doesNotMatch(runtimeSource, /oai-authenticated-user-(?:id|email)/);
+  assert.match(runtimeSource, /async authenticate\(\)[\s\S]*?return null;/);
+
+  const db = await createPhase4BDatabase();
+  try {
+    const repositories = new Repositories({ db });
+    const handle = createApplication(repositories, {
+      async authenticate() {
+        return null;
+      },
+    });
+    for (const headers of [
+      { 'oai-authenticated-user-id': 'attacker' },
+      { 'oai-authenticated-user-email': 'attacker@example.test' },
+      {
+        'oai-authenticated-user-id': 'attacker',
+        'oai-authenticated-user-email': 'attacker@example.test',
+      },
+    ]) {
+      const response = await handle(
+        new Request('http://local.test/api/me/profile', { headers }),
+      );
+      assert.equal(response.status, 401);
+    }
+    assert.equal(
+      db.database.prepare('SELECT COUNT(*) AS count FROM users').get().count,
+      0,
+    );
+    assert.equal(
+      db.database
+        .prepare('SELECT COUNT(*) AS count FROM user_identities')
+        .get().count,
+      0,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('login helper advertises unavailable auth without retaining a Sites route', () => {
+  const clientApiSource = readFileSync(
+    new URL('../../lib/client-api.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(clientApiSource, /\/auth-unavailable\?return_to=/);
+  assert.doesNotMatch(clientApiSource, /signin-with-chatgpt/);
 });
 
 scenario('orphan diagnostic detects intentional internal legacy fixtures without deleting them', async c => {

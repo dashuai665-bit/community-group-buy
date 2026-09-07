@@ -33,10 +33,11 @@ now run against the standalone canonical baseline. They do not call app services
 
 ## Isolation
 
-Do not copy these files into drizzle/. The current Sites plugin copies only
-repository drizzle/ into dist/.openai/drizzle. This directory has no application
-imports. No Sites, Wrangler, runtime or production migration settings change.
-A future production packaging contract and operator workflow remain separate work.
+Do not copy these files into drizzle/. This directory has no application imports
+and remains an offline schema baseline. The independently managed Cloudflare
+production migration contract and operator workflow remain separate work.
+The retained `.openai/hosting.json` is legacy Sites evidence only; neither the
+production build nor runtime reads it as configuration.
 
 ## ORM_SCHEMA_DRIFT at ca7c42b
 

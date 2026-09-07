@@ -3,13 +3,10 @@ import { createApplication, type AuthenticationAdapter } from './application.ts'
 import { Repositories } from './repositories/index.ts';
 
 const productionAuthentication: AuthenticationAdapter = {
-  async authenticate(request) {
-    const providerUserId = request.headers.get('oai-authenticated-user-id');
-    if (!providerUserId) return null;
-    return {
-      provider: 'chatgpt', providerUserId, verified: true,
-      email: request.headers.get('oai-authenticated-user-email') ?? undefined,
-    };
+  async authenticate() {
+    // C3B will install a server-verified production identity provider. Until
+    // then, fail closed: no request header is an authentication credential.
+    return null;
   },
 };
 
