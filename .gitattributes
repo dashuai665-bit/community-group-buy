@@ -1,0 +1,2 @@
+database/canonical/*.sql text eol=lf
+migrations/*.sql text eol=lf

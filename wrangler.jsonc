@@ -16,13 +16,13 @@
     "staging": {
       "name": "linli-coucou-staging",
       "vars": {
-        "APP_ORIGIN": "https://staging.example.invalid",
-        "GOOGLE_CLIENT_ID": "REPLACE_WITH_STAGING_GOOGLE_CLIENT_ID"
+        "APP_ORIGIN": "https://linli-coucou-staging.dashuai665.workers.dev",
+        "GOOGLE_CLIENT_ID": "398111565332-9q8fr7t10eajso0ndm1hb43ludhvlp6a.apps.googleusercontent.com"
       },
       "d1_databases": [{
         "binding": "DB",
         "database_name": "linli-coucou-staging",
-        "database_id": "REPLACE_WITH_STAGING_D1_DATABASE_ID",
+        "database_id": "4aa8116b-9999-4a1f-a625-ca922474c90b",
         "migrations_dir": "migrations"
       }]
     },
