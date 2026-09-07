@@ -19,13 +19,14 @@
     "test:concurrency": "node --test tests/concurrency/*.test.mjs",
     "test:reconciliation": "node --test tests/reconciliation/*.test.mjs",
     "db:verify": "node --test tests/integration/schema.test.mjs",
-    "db:migrate:local": "wrangler d1 execute DB --local --file drizzle/0000_melted_otto_octavius.sql && wrangler d1 execute DB --local --file drizzle/0001_sticky_taskmaster.sql && wrangler d1 execute DB --local --file drizzle/0002_magical_gamma_corps.sql && wrangler d1 execute DB --local --file drizzle/0003_bumpy_cannonball.sql && wrangler d1 execute DB --local --file drizzle/0004_purchase_batches.sql && wrangler d1 execute DB --local --file drizzle/0005_purchase_finalization.sql && wrangler d1 execute DB --local --file drizzle/0006_order_fulfillment.sql && wrangler d1 execute DB --local --file drizzle/0007_audit_logs_append_only.sql",
+    "db:migrate:local": "wrangler d1 execute DB --local --file drizzle/0000_melted_otto_octavius.sql && wrangler d1 execute DB --local --file drizzle/0001_sticky_taskmaster.sql && wrangler d1 execute DB --local --file drizzle/0002_magical_gamma_corps.sql && wrangler d1 execute DB --local --file drizzle/0003_bumpy_cannonball.sql && wrangler d1 execute DB --local --file drizzle/0004_purchase_batches.sql && wrangler d1 execute DB --local --file drizzle/0005_purchase_finalization.sql && wrangler d1 execute DB --local --file drizzle/0006_order_fulfillment.sql && wrangler d1 execute DB --local --file drizzle/0007_audit_logs_append_only.sql && wrangler d1 execute DB --local --file drizzle/0008_auth_storage.sql",
     "format": "oxfmt",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
     "@base-ui/react": "1.7.0",
     "@shadcn/react": "0.3.0",
+    "better-auth": "1.7.2",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "cmdk": "1.1.1",

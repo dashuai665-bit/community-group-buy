@@ -1,7 +1,11 @@
 import { test as base, expect, type BrowserContext, type Page } from '@playwright/test';
 type Role = 'resident' | 'admin' | 'otherAdmin' | 'platform';
 async function create(context: BrowserContext, role: Role) {
-  await context.addCookies([{ name:'e2e-role', value:role, domain:'127.0.0.1', path:'/' }]);
+  const login = await context.request.post(`/__test/auth/login/${role}`);
+  expect(login.ok()).toBe(true);
+  const token = login.headers()['x-e2e-session'];
+  expect(token).toBeTruthy();
+  await context.addCookies([{ name:'e2e-session', value:token, domain:'127.0.0.1', path:'/', httpOnly:true, sameSite:'Lax' }]);
   const page = await context.newPage(); const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => {

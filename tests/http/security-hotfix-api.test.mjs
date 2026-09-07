@@ -152,13 +152,13 @@ test('orphan diagnostic returns zero for fresh migrated DB', async () => {
   try { assert.equal(db.database.prepare(orphanCountSql).get().count, 0); } finally { db.close(); }
 });
 
-test('production authentication remains fail-closed while C3B is pending', async () => {
+test('legacy Sites headers remain unable to authenticate production-shaped requests', async () => {
   const runtimeSource = readFileSync(
     new URL('../../server/runtime.ts', import.meta.url),
     'utf8',
   );
   assert.doesNotMatch(runtimeSource, /oai-authenticated-user-(?:id|email)/);
-  assert.match(runtimeSource, /async authenticate\(\)[\s\S]*?return null;/);
+  assert.match(runtimeSource, /createProductionAuthentication/);
 
   const db = await createPhase4BDatabase();
   try {
@@ -196,12 +196,12 @@ test('production authentication remains fail-closed while C3B is pending', async
   }
 });
 
-test('login helper advertises unavailable auth without retaining a Sites route', () => {
+test('login helper uses the production login route without retaining a Sites route', () => {
   const clientApiSource = readFileSync(
     new URL('../../lib/client-api.ts', import.meta.url),
     'utf8',
   );
-  assert.match(clientApiSource, /\/auth-unavailable\?return_to=/);
+  assert.match(clientApiSource, /\/auth\/login\?returnTo=/);
   assert.doesNotMatch(clientApiSource, /signin-with-chatgpt/);
 });
 

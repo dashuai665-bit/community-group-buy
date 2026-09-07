@@ -2,13 +2,13 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import { createPhase3Database } from '../helpers/sqlite-database.mjs';
+import { createCurrentDatabase } from '../helpers/sqlite-database.mjs';
 import { createCanonicalDatabase, normalizeSql, schemaSnapshot } from '../helpers/canonical-schema.mjs';
 
 const inventory = JSON.parse(await readFile(new URL('../../database/canonical/inventory.json', import.meta.url), 'utf8'));
 
-test('canonical equals unmodified historical 0000-0007: SQL and all structural PRAGMAs', async t => {
-  const historical = await createPhase3Database(); t.after(() => historical.close());
+test('canonical equals unmodified historical 0000-0008: SQL and all structural PRAGMAs', async t => {
+  const historical = await createCurrentDatabase(); t.after(() => historical.close());
   const canonical = await createCanonicalDatabase(); t.after(() => canonical.close());
   assert.deepEqual(schemaSnapshot(canonical), schemaSnapshot(historical.database));
   for (const db of [historical.database,canonical]) {
@@ -20,7 +20,12 @@ test('canonical equals unmodified historical 0000-0007: SQL and all structural P
     }
     for (const name of inventory.table) assert.equal(db.prepare(`SELECT count(*) AS n FROM "${name}"`).get().n,0,`${name} has no seed data`);
   }
-  assert.equal(inventory.table.length,22);
+  assert.equal(inventory.table.length,26);
+  assert.deepEqual(
+    inventory.table.filter(name => name.startsWith('auth_')),
+    ['auth_accounts','auth_sessions','auth_users','auth_verifications'],
+  );
+  assert.equal(inventory.index.length,36);
   assert.equal(inventory.trigger.length,22);
 });
 

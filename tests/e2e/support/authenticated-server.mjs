@@ -33,7 +33,7 @@ for (const migration of ['0000_melted_otto_octavius.sql','0001_sticky_taskmaster
   database.exec(readFileSync(join(process.cwd(), 'drizzle', migration), 'utf8'));
 database.exec(`INSERT INTO users(id) VALUES('e2e-resident'),('e2e-admin'),('e2e-other-admin'),('e2e-platform');
 INSERT INTO user_profiles(user_id,display_name,phone) VALUES('e2e-resident','測試住戶','0911111111'),('e2e-admin','測試管理員','0922222222'),('e2e-other-admin','其他管理員','0933333333'),('e2e-platform','平台管理員','0944444444');
-INSERT INTO user_identities(id,user_id,provider,provider_user_id,verified) VALUES('e2e-ir','e2e-resident','chatgpt','e2e-resident','true'),('e2e-ia','e2e-admin','chatgpt','e2e-admin','true'),('e2e-io','e2e-other-admin','chatgpt','e2e-other-admin','true'),('e2e-ip','e2e-platform','chatgpt','e2e-platform','true');
+INSERT INTO user_identities(id,user_id,provider,provider_user_id,verified) VALUES('e2e-ir','e2e-resident','google','e2e-resident','true'),('e2e-ia','e2e-admin','google','e2e-admin','true'),('e2e-io','e2e-other-admin','google','e2e-other-admin','true'),('e2e-ip','e2e-platform','google','e2e-platform','true');
 INSERT INTO communities(id,name,slug,status) VALUES('e2e-c1','瀏覽器測試社區','e2e-c1','active'),('e2e-c2','其他測試社區','e2e-c2','active');
 INSERT INTO community_members(id,user_id,community_id,role) VALUES('e2e-mr','e2e-resident','e2e-c1','resident'),('e2e-ma','e2e-admin','e2e-c1','community_admin'),('e2e-mo','e2e-other-admin','e2e-c2','community_admin');
 INSERT INTO platform_roles(user_id,role) VALUES('e2e-platform','platform_admin');
@@ -51,10 +51,12 @@ for (let index = 0; index < 23; index += 1) {
 }
 
 const identities = { resident:'e2e-resident', admin:'e2e-admin', otherAdmin:'e2e-other-admin', platform:'e2e-platform' };
+const sessions = new Map();
 const fixtureApp = createApplication(new Repositories({ db: fixtureDb }), {
   async authenticate(request) {
-    const providerUserId = request.headers.get('oai-authenticated-user-id');
-    return providerUserId ? { provider: 'chatgpt', providerUserId, verified: true } : null;
+    const token = /(?:^|;\s*)e2e-session=([^;]+)/.exec(request.headers.get('cookie') ?? '')?.[1];
+    const providerUserId = token ? sessions.get(token) : null;
+    return providerUserId ? { provider: 'google', providerUserId, verified: true } : null;
   },
 });
 const proxy = createServer(async (incoming, outgoing) => {
@@ -62,11 +64,26 @@ const proxy = createServer(async (incoming, outgoing) => {
     const chunks = []; for await (const chunk of incoming) chunks.push(chunk);
     const headers = new Headers();
     for (const [name, value] of Object.entries(incoming.headers)) if (value && name !== 'host') headers.set(name, Array.isArray(value) ? value.join(',') : value);
-    const role = /(?:^|;\s*)e2e-role=([^;]+)/.exec(incoming.headers.cookie ?? '')?.[1];
-    if (role && identities[role]) { headers.set('oai-authenticated-user-id', identities[role]); headers.set('oai-authenticated-user-email', `${identities[role]}@sites.test`); }
-    headers.delete('cookie');
+    const loginMatch = /^\/__test\/auth\/login\/(resident|admin|otherAdmin|platform)$/.exec(incoming.url ?? '');
+    if (incoming.method === 'POST' && loginMatch) {
+      const token = crypto.randomUUID();
+      sessions.set(token, identities[loginMatch[1]]);
+      outgoing.writeHead(204, { 'x-e2e-session': token });
+      outgoing.end(); return;
+    }
+    if (incoming.method === 'GET' && incoming.url?.startsWith('/auth/login?')) {
+      outgoing.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      outgoing.end('<!doctype html><html lang="zh-Hant"><title>登入</title><body><h1>Google 登入</h1></body></html>');
+      return;
+    }
+    if (incoming.method === 'POST' && incoming.url === '/auth/logout') {
+      const token = /(?:^|;\s*)e2e-session=([^;]+)/.exec(incoming.headers.cookie ?? '')?.[1];
+      if (token) sessions.delete(token);
+      outgoing.writeHead(303, { location: '/', 'set-cookie': 'e2e-session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0' });
+      outgoing.end(); return;
+    }
     if (incoming.url?.startsWith('/api/')) {
-      const response = await fixtureApp(new Request(`http://fixture${incoming.url}`, { method: incoming.method, headers, body: ['GET','HEAD'].includes(incoming.method ?? 'GET') ? undefined : Buffer.concat(chunks) }));
+      const response = await fixtureApp(new Request(`http://127.0.0.1:${proxyPort}${incoming.url}`, { method: incoming.method, headers, body: ['GET','HEAD'].includes(incoming.method ?? 'GET') ? undefined : Buffer.concat(chunks) }));
       outgoing.writeHead(response.status, Object.fromEntries(response.headers.entries()));
       outgoing.end(Buffer.from(await response.arrayBuffer()));
       return;

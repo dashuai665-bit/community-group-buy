@@ -12,6 +12,7 @@ const migrationUrls = [
   new URL('../../drizzle/0005_purchase_finalization.sql', import.meta.url),
   new URL('../../drizzle/0006_order_fulfillment.sql', import.meta.url),
   new URL('../../drizzle/0007_audit_logs_append_only.sql', import.meta.url),
+  new URL('../../drizzle/0008_auth_storage.sql', import.meta.url),
 ];
 
 async function createMigratedDatabase() {
@@ -38,11 +39,28 @@ test('migration 可以重複建立兩個乾淨 SQLite DB，且 foreign_key_check
     ).all();
     assert.deepEqual(
       tables.map(({ name }) => name),
-      ['audit_logs', 'batch_commitments', 'cash_payments', 'communities', 'community_members', 'community_product_offerings', 'group_buy_batches', 'order_items', 'orders', 'pickup_records', 'platform_roles', 'product_wishes', 'products', 'purchase_allocations', 'purchase_batch_finalizations', 'purchase_batch_groups', 'purchase_batches', 'purchase_group_results', 'purchase_receipts', 'user_identities', 'user_profiles', 'users'],
+      ['audit_logs', 'auth_accounts', 'auth_sessions', 'auth_users', 'auth_verifications', 'batch_commitments', 'cash_payments', 'communities', 'community_members', 'community_product_offerings', 'group_buy_batches', 'order_items', 'orders', 'pickup_records', 'platform_roles', 'product_wishes', 'products', 'purchase_allocations', 'purchase_batch_finalizations', 'purchase_batch_groups', 'purchase_batches', 'purchase_group_results', 'purchase_receipts', 'user_identities', 'user_profiles', 'users'],
     );
     assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
     database.close();
   }
+});
+
+test('auth storage 只保存 Better Auth internal user/session/account/verification', async () => {
+  const database = await createMigratedDatabase();
+  const now = Date.now();
+  database.prepare('INSERT INTO auth_users(id,name,email,email_verified,created_at,updated_at) VALUES(?,?,?,?,?,?)')
+    .run('auth-user', 'Google User', 'user@example.test', 1, now, now);
+  database.prepare('INSERT INTO auth_accounts(id,account_id,provider_id,user_id,created_at,updated_at) VALUES(?,?,?,?,?,?)')
+    .run('auth-account', 'google-sub', 'google', 'auth-user', now, now);
+  database.prepare('INSERT INTO auth_sessions(id,expires_at,token,created_at,updated_at,user_id) VALUES(?,?,?,?,?,?)')
+    .run('auth-session', now + 60_000, 'opaque-token', now, now, 'auth-user');
+  assert.throws(() => database.prepare('INSERT INTO auth_sessions(id,expires_at,token,created_at,updated_at,user_id) VALUES(?,?,?,?,?,?)')
+    .run('duplicate', now + 60_000, 'opaque-token', now, now, 'auth-user'), /UNIQUE/);
+  assert.throws(() => database.prepare('INSERT INTO auth_accounts(id,account_id,provider_id,user_id,created_at,updated_at) VALUES(?,?,?,?,?,?)')
+    .run('duplicate', 'google-sub', 'google', 'auth-user', now, now), /UNIQUE/);
+  assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
+  database.close();
 });
 
 test('Phase 4A 金額、offering、batch 與 wish constraints 正確', async () => {

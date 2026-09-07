@@ -1,18 +1,18 @@
 # Canonical current schema (offline only)
 
-Baseline: ca7c42b7d4c109a3871f69169fe030880590f030.
+Baseline: 1e23e1f9d1a134a1a22d7f59cf9ba33569a65ae4.
 
 `current-schema.sql` is extracted from the actual `sqlite_master.sql` of an
-empty SQLite database after executing the unmodified historical 0000–0007
-files, using the existing `createPhase3Database` helper. It is NOT generated
+empty SQLite database after executing the unmodified historical 0000–0008
+files, using the `createCurrentDatabase` helper. It is NOT generated
 from the ORM, a production migration runner, or a legacy data conversion.
 Historical execution follows the existing per-file, autocommit SQLite helper;
 this does not certify that the historical chain works under D1 transaction rules.
 
 Extraction selects all non-NULL SQL, ordered by table, index, trigger, then
 name, and appends statement terminators. SQLite automatically recreates the
-24 implicit indexes from PRIMARY KEY and UNIQUE constraints. The checked-in
-inventory explicitly names 22 tables, 30 explicit indexes and 22 triggers.
+28 implicit indexes from PRIMARY KEY and UNIQUE constraints. The checked-in
+inventory explicitly names 26 tables, 36 explicit indexes and 22 triggers.
 Tests also compare implicit indexes through sqlite_master and PRAGMAs.
 
 Run only:
@@ -39,7 +39,7 @@ production migration contract and operator workflow remain separate work.
 The retained `.openai/hosting.json` is legacy Sites evidence only; neither the
 production build nor runtime reads it as configuration.
 
-## ORM_SCHEMA_DRIFT at ca7c42b
+## ORM_SCHEMA_DRIFT at 1e23e1f
 
 The historical final schema and this baseline agree. The ORM is not a complete
 DDL source. Memory-only generation from db/schema.ts confirmed matching columns,
@@ -62,6 +62,8 @@ types, nullability, defaults, primary-key positions and FK relationships/actions
   fulfilled_quantity >= 0 AND fulfilled_quantity <= committed_quantity_snapshot;
   shortage_quantity = committed_quantity_snapshot - fulfilled_quantity;
   final_amount_minor >= 0. Missing index purchase_allocations_order_item_idx.
+- The four Better Auth storage tables and their six indexes are represented by
+  server/auth/schema.ts rather than the business ORM schema in db/schema.ts.
 - All 22 operational triggers are migration-defined, not represented by db/schema.ts.
 - purchase_receipts uniqueness is modeled with named unique indexes by ORM
   generation, versus inline UNIQUE constraints/implicit indexes in historical DDL.

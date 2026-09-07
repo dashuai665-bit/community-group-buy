@@ -1,6 +1,10 @@
 {
   "table": [
     "audit_logs",
+    "auth_accounts",
+    "auth_sessions",
+    "auth_users",
+    "auth_verifications",
     "batch_commitments",
     "cash_payments",
     "communities",
@@ -26,6 +30,12 @@
   "index": [
     "audit_logs_actor_created_idx",
     "audit_logs_community_created_idx",
+    "auth_accounts_provider_account_unique",
+    "auth_accounts_user_idx",
+    "auth_sessions_token_unique",
+    "auth_sessions_user_idx",
+    "auth_users_email_unique",
+    "auth_verifications_identifier_idx",
     "batch_commitments_batch_idx",
     "batch_commitments_order_item_status_idx",
     "batch_commitments_request_batch_unique",

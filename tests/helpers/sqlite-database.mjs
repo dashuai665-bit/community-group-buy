@@ -7,6 +7,7 @@ class SQLiteStatement {
   bind(...values) { const statement = new SQLiteStatement(this.database, this.sql); statement.values = values; return statement; }
   async first() { return this.database.prepare(this.sql).get(...this.values) ?? null; }
   async all() { return { success: true, results: this.database.prepare(this.sql).all(...this.values) }; }
+  async raw() { return this.database.prepare(this.sql).all(...this.values).map(row => Object.values(row)); }
   async run() { return { success: true, meta: this.database.prepare(this.sql).run(...this.values) }; }
 }
 
@@ -43,6 +44,12 @@ export async function createPhase3Database() {
   for (const file of ['../../drizzle/0000_melted_otto_octavius.sql', '../../drizzle/0001_sticky_taskmaster.sql','../../drizzle/0002_magical_gamma_corps.sql','../../drizzle/0003_bumpy_cannonball.sql','../../drizzle/0004_purchase_batches.sql','../../drizzle/0005_purchase_finalization.sql','../../drizzle/0006_order_fulfillment.sql','../../drizzle/0007_audit_logs_append_only.sql']) {
     db.exec(await readFile(new URL(file, import.meta.url), 'utf8'));
   }
+  return db;
+}
+
+export async function createCurrentDatabase() {
+  const db = await createPhase3Database();
+  db.exec(await readFile(new URL('../../drizzle/0008_auth_storage.sql', import.meta.url), 'utf8'));
   return db;
 }
 

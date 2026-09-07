@@ -1,5 +1,5 @@
--- Offline canonical schema at ca7c42b. Not a production migration.
--- Extracted from sqlite_master after unmodified historical 0000 through 0007.
+-- Offline canonical schema at 1e23e1f. Not a production migration.
+-- Extracted from sqlite_master after unmodified historical 0000 through 0008.
 -- No seed data; do not copy into drizzle/.
 PRAGMA foreign_keys = ON;
 
@@ -15,6 +15,30 @@ CREATE TABLE "audit_logs" (
 	FOREIGN KEY (`actor_user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE restrict,
 	FOREIGN KEY (`community_id`) REFERENCES `communities`(`id`) ON UPDATE no action ON DELETE restrict,
 	CONSTRAINT "audit_logs_action_type_check" CHECK("audit_logs"."action_type" IN ('community_join', 'community_leave', 'default_community_change', 'identity_link', 'identity_unlink', 'admin_member_contact_access', 'product_created', 'offering_created', 'offering_updated', 'batch_formed', 'wish_created', 'wish_status_changed', 'order_created', 'order_cancelled', 'admin_order_cancelled', 'order_status_changed', 'pickup_created', 'pickup_ready', 'pickup_completed'))
+);
+
+CREATE TABLE auth_accounts (
+  id TEXT PRIMARY KEY NOT NULL, account_id TEXT NOT NULL, provider_id TEXT NOT NULL,
+  user_id TEXT NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,
+  access_token TEXT, refresh_token TEXT, id_token TEXT, access_token_expires_at INTEGER,
+  refresh_token_expires_at INTEGER, scope TEXT, password TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE auth_sessions (
+  id TEXT PRIMARY KEY NOT NULL, expires_at INTEGER NOT NULL, token TEXT NOT NULL,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, ip_address TEXT, user_agent TEXT,
+  user_id TEXT NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE auth_users (
+  id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, email TEXT NOT NULL,
+  email_verified INTEGER NOT NULL, image TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE auth_verifications (
+  id TEXT PRIMARY KEY NOT NULL, identifier TEXT NOT NULL, value TEXT NOT NULL,
+  expires_at INTEGER NOT NULL, created_at INTEGER, updated_at INTEGER
 );
 
 CREATE TABLE "batch_commitments" (
@@ -347,6 +371,18 @@ CREATE TABLE `users` (
 CREATE INDEX `audit_logs_actor_created_idx` ON `audit_logs` (`actor_user_id`,`created_at`);
 
 CREATE INDEX `audit_logs_community_created_idx` ON `audit_logs` (`community_id`,`created_at`);
+
+CREATE UNIQUE INDEX auth_accounts_provider_account_unique ON auth_accounts(provider_id, account_id);
+
+CREATE INDEX auth_accounts_user_idx ON auth_accounts(user_id);
+
+CREATE UNIQUE INDEX auth_sessions_token_unique ON auth_sessions(token);
+
+CREATE INDEX auth_sessions_user_idx ON auth_sessions(user_id);
+
+CREATE UNIQUE INDEX auth_users_email_unique ON auth_users(email);
+
+CREATE INDEX auth_verifications_identifier_idx ON auth_verifications(identifier);
 
 CREATE INDEX `batch_commitments_batch_idx` ON `batch_commitments` (`batch_id`);
 

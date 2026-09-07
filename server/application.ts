@@ -115,6 +115,12 @@ export function createApplication(
     try {
       const url = new URL(request.url);
       const path = url.pathname;
+      if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method)) {
+        const origin = request.headers.get('origin');
+        const fetchSite = request.headers.get('sec-fetch-site');
+        if ((origin && origin !== url.origin) || fetchSite === 'cross-site')
+          throw new ApiError(403, 'CROSS_ORIGIN_REQUEST', '不允許跨網站修改資料');
+      }
       const auditQuery = () => {
         const page = Number(url.searchParams.get('page') ?? 1);
         const limit = Number(url.searchParams.get('limit') ?? 50);
