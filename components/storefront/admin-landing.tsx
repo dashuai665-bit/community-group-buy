@@ -1,5 +1,5 @@
 'use client';
-import Link from 'next/link';
+import { AppLink as Link } from './app-link';
 import {
   Building2,
   ClipboardList,

@@ -55,6 +55,7 @@ export class IdentityService {
         this.repositories.profiles.insertStatement(
           userId,
           identity.email ?? null,
+          identity.provider === 'email',
         ),
         this.repositories.identities.insertStatement(
           createId(),

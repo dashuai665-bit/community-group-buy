@@ -1,5 +1,5 @@
 'use client';
-import Link from 'next/link';
+import { AppLink as Link } from './app-link';
 import { useEffect, useState } from 'react';
 import { api, ClientApiError } from '@/lib/client-api';
 import { formatMoney, formatOrderStatus } from '@/lib/storefront';

@@ -57,6 +57,23 @@ test('verified Google session resolves by sub without email merging and remains 
   } finally { context.db.close(); }
 });
 
+test('verified auth user without credential provenance cannot become an email app identity', async () => {
+  const context = await setup();
+  try {
+    const now = Date.now();
+    context.sql.prepare(`INSERT INTO auth_users(id,name,email,email_verified,image,created_at,updated_at) VALUES (?,?,?,?,?,?,?)`)
+      .run('unproven-auth-user', 'Unproven', 'unproven@example.test', 1, null, now, now);
+    context.sql.prepare(`INSERT INTO auth_sessions(id,expires_at,token,created_at,updated_at,user_id) VALUES (?,?,?,?,?,?)`)
+      .run('unproven-session', now + 60_000, 'unproven-token', now, now, 'unproven-auth-user');
+    const before = context.sql.prepare(`SELECT COUNT(*) count FROM user_identities WHERE provider='email'`).get().count;
+    const response = await context.application(new Request('https://app.example.test/api/me/profile', {
+      headers: { cookie: cookie('unproven-token') },
+    }));
+    assert.equal(response.status, 401);
+    assert.equal(context.sql.prepare(`SELECT COUNT(*) count FROM user_identities WHERE provider='email'`).get().count, before);
+  } finally { context.db.close(); }
+});
+
 test('tampered, expired and revoked server sessions cannot authenticate', async () => {
   const context = await setup();
   try {
@@ -159,5 +176,6 @@ test('production authentication source contains no trusted legacy or test identi
   ].map(path => readFile(new URL(path, import.meta.url), 'utf8')));
   const production = sources.join('\n');
   assert.doesNotMatch(production, /oai-authenticated-user-(?:id|email)|E2E_|e2e-session|x-user|NODE_ENV\s*===\s*['"]test/);
-  assert.match(production, /providerUserId: account\.account_id/);
+  assert.match(production, /providerUserId: google\.account_id/);
+  assert.match(production, /providerUserId: email\.account_id/);
 });

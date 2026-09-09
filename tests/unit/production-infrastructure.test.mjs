@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { bootstrapSql } from '../../scripts/bootstrap-platform-admin.mjs';
 import { validateEnvironment } from '../../scripts/check-production-config.mjs';
 
-test('production config isolates staging and production and fails closed on placeholders', async () => {
+test('production config isolates staging and production and rejects placeholders', async () => {
   const config = JSON.parse(await readFile(new URL('../../wrangler.jsonc', import.meta.url), 'utf8'));
   const manifest = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8'));
   const runbook = await readFile(new URL('../../docs/production-deployment.md', import.meta.url), 'utf8');
@@ -17,8 +17,13 @@ test('production config isolates staging and production and fails closed on plac
   assert.equal('GOOGLE_CLIENT_SECRET' in config.env.staging.vars, false);
   assert.equal('BETTER_AUTH_SECRET' in config.env.production.vars, false);
   assert.doesNotMatch(JSON.stringify(config), /site-creator-d1|00000000-0000-4000-8000/);
-  assert.ok(validateEnvironment(config, 'staging').length > 0);
+  assert.deepEqual(validateEnvironment(config, 'staging'), []);
   assert.ok(validateEnvironment(config, 'production').length > 0);
+  const placeholderConfig = structuredClone(config);
+  placeholderConfig.env.staging.vars.APP_ORIGIN = 'https://staging.example.invalid';
+  placeholderConfig.env.staging.vars.GOOGLE_CLIENT_ID = 'REPLACE_WITH_STAGING_GOOGLE_CLIENT_ID';
+  placeholderConfig.env.staging.d1_databases[0].database_id = 'REPLACE_WITH_STAGING_D1_DATABASE_ID';
+  assert.ok(validateEnvironment(placeholderConfig, 'staging').length > 0);
   assert.equal(config.env.staging.d1_databases[0].migrations_dir, 'migrations');
   assert.match(manifest.scripts['build:staging'], /build-worker\.mjs staging/);
   assert.match(manifest.scripts['build:production'], /build-worker\.mjs production/);

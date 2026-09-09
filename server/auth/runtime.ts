@@ -1,5 +1,6 @@
 import { env } from 'cloudflare:workers';
 import { createProductionAuth, type AuthEnvironment } from './better-auth.ts';
+import { D1EmailMagicLinkRepository, EmailMagicLinkService } from './email-magic-link.ts';
 
 function requireEnvironment(): AuthEnvironment {
   const required = ['DB', 'APP_ORIGIN', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'BETTER_AUTH_SECRET'] as const;
@@ -10,4 +11,12 @@ function requireEnvironment(): AuthEnvironment {
 let instance: ReturnType<typeof createProductionAuth> | undefined;
 export function getProductionAuth() {
   return instance ??= createProductionAuth(requireEnvironment());
+}
+
+let emailMagicLinkService: EmailMagicLinkService | undefined;
+export function getEmailMagicLinkService() {
+  return emailMagicLinkService ??= new EmailMagicLinkService(
+    getProductionAuth(),
+    new D1EmailMagicLinkRepository(requireEnvironment().DB),
+  );
 }

@@ -205,11 +205,12 @@ export class UserProfileRepository extends RepositoryBase {
       userId,
     ).first<ProfileRow>();
   }
-  insertStatement(userId: string, email: string | null) {
+  insertStatement(userId: string, email: string | null, emailVerified = false) {
     return this.statement(
-      "INSERT INTO user_profiles (user_id, email, email_verified) VALUES (?, ?, 'false')",
+      'INSERT INTO user_profiles (user_id, email, email_verified) VALUES (?, ?, ?)',
       userId,
       email,
+      emailVerified ? 'true' : 'false',
     );
   }
   setDefaultStatement(userId: string, communityId: string | null) {

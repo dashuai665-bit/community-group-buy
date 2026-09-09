@@ -1,5 +1,5 @@
 'use client';
-import Link from 'next/link';
+import { AppLink as Link } from './app-link';
 import { BadgeCheck, Building2, Heart, Phone, ShieldAlert, UserRound } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { api, ClientApiError, loginPath } from '@/lib/client-api';

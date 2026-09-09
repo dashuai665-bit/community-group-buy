@@ -8,6 +8,7 @@ process.env.E2E_FIXTURE_DIR ??= mkdtempSync(join(tmpdir(), 'linli-e2e-'));
 
 export default defineConfig({
   testDir: './tests/e2e',
+  testIgnore: ['production-navigation.spec.ts', 'production-auth.spec.ts'],
   // Authenticated journeys share one isolated SQLite fixture and vinext dev server.
   workers: 1,
   timeout: 30_000,

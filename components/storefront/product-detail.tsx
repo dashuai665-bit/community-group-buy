@@ -1,5 +1,5 @@
 'use client';
-import Link from 'next/link';
+import { AppLink as Link } from './app-link';
 import { Minus, Plus, ShieldCheck } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { api, ClientApiError, loginPath } from '@/lib/client-api';
