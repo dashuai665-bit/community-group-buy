@@ -242,3 +242,83 @@ scenario('41 resident admin landing API returns no manageable communities', asyn
   assert.equal(payload.isPlatformAdmin, false);
   assert.deepEqual(payload.communities, []);
 });
+scenario('42 profile API exposes verified email and server-derived completeness', async ({ db, handle }) => {
+  let response = await call(handle, '/api/me/profile', { token: 'active' });
+  assert.equal(response.status, 200);
+  let payload = await response.json();
+  assert.equal(payload.profile.emailVerified, false);
+  assert.equal(payload.profile.profileComplete, true);
+
+  db.database.prepare("UPDATE user_profiles SET phone=NULL WHERE user_id='active'").run();
+  response = await call(handle, '/api/me/profile', { token: 'active' });
+  payload = await response.json();
+  assert.equal(payload.profile.profileComplete, false);
+});
+scenario('43 onboarding atomically completes only the authenticated profile', async ({ handle, repositories }) => {
+  const targetBefore = await repositories.profiles.findByUserId('target');
+  const response = await call(handle, '/api/me/profile/onboarding', {
+    method: 'PUT',
+    token: 'active',
+    body: {
+      displayName: '  新姓名  ',
+      phone: '0911111111',
+      userId: 'target',
+      email: 'attacker@example.test',
+      emailVerified: false,
+      phoneVerified: true,
+      defaultCommunityId: null,
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { success: true, profileComplete: true });
+  const self = await repositories.profiles.findByUserId('active');
+  assert.equal(self.display_name, '新姓名');
+  assert.equal(self.phone, '0911111111');
+  assert.equal(self.phone_verified, 'false');
+  assert.equal(self.email, 'resident@example.test');
+  assert.equal(self.email_verified, 'false');
+  assert.equal(self.default_community_id, 'A');
+  const targetAfter = await repositories.profiles.findByUserId('target');
+  assert.equal(targetAfter.display_name, targetBefore.display_name);
+  assert.equal(targetAfter.phone, targetBefore.phone);
+  assert.equal(targetAfter.email, targetBefore.email);
+});
+scenario('44 onboarding requires an authenticated active canonical user', async ({ handle }) => {
+  const body = { displayName: '新會員', phone: '0912345678' };
+  assert.equal((await call(handle, '/api/me/profile/onboarding', { method: 'PUT', body })).status, 401);
+  assert.equal((await call(handle, '/api/me/profile/onboarding', { method: 'PUT', token: 'suspended', body })).status, 403);
+  assert.equal((await call(handle, '/api/me/profile/onboarding', { method: 'PUT', token: 'deleted', body })).status, 403);
+});
+scenario('45 onboarding validates display name and phone before writing', async ({ handle, repositories }) => {
+  const before = await repositories.profiles.findByUserId('active');
+  const cases = [
+    { displayName: '   ', phone: '0912345678' },
+    { displayName: 'a'.repeat(81), phone: '0912345678' },
+    { displayName: '新會員', phone: '123' },
+    { displayName: '新會員', phone: '0912-345-678' },
+  ];
+  for (const body of cases) {
+    assert.equal((await call(handle, '/api/me/profile/onboarding', { method: 'PUT', token: 'active', body })).status, 422);
+  }
+  const after = await repositories.profiles.findByUserId('active');
+  assert.equal(after.display_name, before.display_name);
+  assert.equal(after.phone, before.phone);
+  assert.equal(after.phone_verified, before.phone_verified);
+});
+scenario('46 cross-origin onboarding update is rejected before writing', async ({ handle, repositories }) => {
+  const before = await repositories.profiles.findByUserId('active');
+  const response = await handle(new Request('http://local.test/api/me/profile/onboarding', {
+    method: 'PUT',
+    headers: {
+      authorization: 'Bearer active',
+      'content-type': 'application/json',
+      origin: 'https://evil.example',
+    },
+    body: JSON.stringify({ displayName: '攻擊者', phone: '0999999999' }),
+  }));
+  assert.equal(response.status, 403);
+  const after = await repositories.profiles.findByUserId('active');
+  assert.equal(after.display_name, before.display_name);
+  assert.equal(after.phone, before.phone);
+  assert.equal(after.phone_verified, before.phone_verified);
+});

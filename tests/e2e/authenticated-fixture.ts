@@ -1,5 +1,5 @@
 import { test as base, expect, type BrowserContext, type Page } from '@playwright/test';
-type Role = 'resident' | 'admin' | 'otherAdmin' | 'platform';
+type Role = 'resident' | 'admin' | 'otherAdmin' | 'platform' | 'onboarding';
 async function create(context: BrowserContext, role: Role) {
   const login = await context.request.post(`/__test/auth/login/${role}`);
   expect(login.ok()).toBe(true);
@@ -18,11 +18,12 @@ async function create(context: BrowserContext, role: Role) {
   });
   return { page, errors };
 }
-export const test = base.extend<{residentPage:Page;adminPage:Page;otherAdminPage:Page;platformAdminPage:Page}>({
+export const test = base.extend<{residentPage:Page;adminPage:Page;otherAdminPage:Page;platformAdminPage:Page;onboardingPage:Page}>({
   residentPage: async ({browser},run)=>{const c=await browser.newContext();const x=await create(c,'resident');await run(x.page);expect(x.errors).toEqual([]);await c.close();},
   adminPage: async ({browser},run)=>{const c=await browser.newContext();const x=await create(c,'admin');await run(x.page);expect(x.errors).toEqual([]);await c.close();},
   otherAdminPage: async ({browser},run)=>{const c=await browser.newContext();const x=await create(c,'otherAdmin');await run(x.page);expect(x.errors).toEqual([]);await c.close();},
   platformAdminPage: async ({browser},run)=>{const c=await browser.newContext();const x=await create(c,'platform');await run(x.page);expect(x.errors).toEqual([]);await c.close();},
+  onboardingPage: async ({browser},run)=>{const c=await browser.newContext();const x=await create(c,'onboarding');await run(x.page);expect(x.errors).toEqual([]);await c.close();},
 });
 export { expect };
 export async function expectNoOverflow(page: Page) { expect(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth)).toBeLessThanOrEqual(1); }

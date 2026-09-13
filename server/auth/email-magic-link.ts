@@ -1,6 +1,6 @@
 import type { ProductionAuth } from './better-auth.ts';
 import { EmailDeliveryUnavailableError } from './email-provider.ts';
-import { safeReturnTo } from './redirect.ts';
+import { emailContinuationPath, safeReturnTo } from './redirect.ts';
 
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -61,7 +61,11 @@ export class EmailMagicLinkService {
 
     try {
       await this.auth.api.signInMagicLink({
-        body: { email, callbackURL: returnTo, errorCallbackURL: '/' },
+        body: {
+          email,
+          callbackURL: emailContinuationPath(returnTo),
+          errorCallbackURL: '/',
+        },
         headers,
       });
     } catch (error) {

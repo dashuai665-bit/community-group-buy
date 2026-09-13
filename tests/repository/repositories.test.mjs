@@ -19,6 +19,42 @@ test('repository CRUD 使用 prepared binding，migration 與 foreign keys 正�
   db.close();
 });
 
+test('onboarding profile update is one statement and preserves email and default community', async () => {
+  const db = await createPhase3Database();
+  seed(db, `
+    INSERT INTO users(id) VALUES ('self'),('other');
+    INSERT INTO communities(id,name,slug) VALUES ('A','A 社區','a');
+    INSERT INTO community_members(id,user_id,community_id) VALUES ('self-a','self','A');
+    INSERT INTO user_profiles(user_id,display_name,phone,phone_verified,email,email_verified,default_community_id)
+    VALUES ('self',NULL,'0912345678','true','self@example.test','true','A'),
+           ('other','其他人','0987654321','true','other@example.test','true',NULL);
+  `);
+  const repositories = new Repositories({ db });
+
+  await repositories.batch([
+    repositories.profiles.completeOnboardingStatement(
+      'self',
+      '完成會員',
+      '0912345678',
+    ),
+  ]);
+
+  const self = await repositories.profiles.findByUserId('self');
+  assert.equal(self.display_name, '完成會員');
+  assert.equal(self.phone, '0912345678');
+  assert.equal(self.phone_verified, 'false');
+  assert.equal(self.email, 'self@example.test');
+  assert.equal(self.email_verified, 'true');
+  assert.equal(self.default_community_id, 'A');
+  const other = await repositories.profiles.findByUserId('other');
+  assert.equal(other.display_name, '其他人');
+  assert.equal(other.phone, '0987654321');
+  assert.equal(other.phone_verified, 'true');
+  assert.equal(other.email, 'other@example.test');
+  assert.equal(other.email_verified, 'true');
+  db.close();
+});
+
 test('first-login provisioning commit，existing identity 回傳同一 users.id', async () => {
   const db = await createPhase3Database();
   const service = new IdentityService(new Repositories({ db }));

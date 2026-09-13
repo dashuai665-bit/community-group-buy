@@ -5,6 +5,7 @@ import {
   CommunityMembershipService,
   CommunityPreferenceService,
   IdentityService,
+  isProfileComplete,
   ProfileService,
   requireActiveUser,
   type AuthenticatedProviderIdentity,
@@ -671,6 +672,8 @@ export function createApplication(
             phone: profile.phone,
             phoneVerified: profile.phone_verified === 'true',
             email: profile.email,
+            emailVerified: profile.email_verified === 'true',
+            profileComplete: isProfileComplete(profile),
             defaultCommunityId: profile.default_community_id,
           },
           isPlatformAdmin: await repositories.platformRoles.isPlatformAdmin(
@@ -699,6 +702,19 @@ export function createApplication(
           throw new ApiError(422, 'VALIDATION_ERROR', 'phone 格式不正確');
         await profiles.changePhone(await appUser(request), phone);
         return Response.json({ success: true });
+      }
+      if (request.method === 'PUT' && path === '/api/me/profile/onboarding') {
+        const body = await readObject(request);
+        const displayName = validateText(body.displayName, 'displayName', 80);
+        const phone = typeof body.phone === 'string' ? body.phone.trim() : '';
+        if (!/^0[0-9]{8,9}$/.test(phone))
+          throw new ApiError(422, 'VALIDATION_ERROR', 'phone 格式不正確');
+        await profiles.completeOnboarding(
+          await appUser(request),
+          displayName,
+          phone,
+        );
+        return Response.json({ success: true, profileComplete: true });
       }
       match = path.match(
         /^\/api\/admin\/communities\/([^/]+)\/members\/([^/]+)\/contact$/,

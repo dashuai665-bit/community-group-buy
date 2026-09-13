@@ -12,7 +12,10 @@ import {
 import { FakeEmailProvider } from '../../server/auth/fake-email-provider.ts';
 import { EmailDeliveryUnavailableError } from '../../server/auth/email-provider.ts';
 import { generateMagicLinkToken } from '../../server/auth/magic-link-token.ts';
-import { safeReturnTo } from '../../server/auth/redirect.ts';
+import {
+  safeEmailContinuationReturnTo,
+  safeReturnTo,
+} from '../../server/auth/redirect.ts';
 import { Repositories } from '../../server/repositories/index.ts';
 import { createPhase3Database } from '../helpers/sqlite-database.mjs';
 
@@ -68,7 +71,10 @@ test('magic link stores only a hash for ten minutes and can be consumed once', a
     assert.equal(context.email.messages.length, 1);
     const message = context.email.messages[0];
     assert.equal(message.email, 'new@example.test');
-    assert.match(message.url, /callbackURL=%2Forders/);
+    assert.equal(
+      new URL(message.url).searchParams.get('callbackURL'),
+      '/auth/email/continue?returnTo=%2Forders',
+    );
     const verification = context.sql.prepare('SELECT identifier,value,expires_at FROM auth_verifications').get();
     assert.notEqual(verification.identifier, message.token);
     assert.doesNotMatch(verification.value, new RegExp(message.token));
@@ -77,7 +83,9 @@ test('magic link stores only a hash for ten minutes and can be consumed once', a
 
     const first = await consume(context, message);
     assert.equal(first.status, 302);
-    assert.equal(new URL(first.headers.get('location')).pathname, '/orders');
+    const firstLocation = new URL(first.headers.get('location'));
+    assert.equal(firstLocation.pathname, '/auth/email/continue');
+    assert.equal(firstLocation.searchParams.get('returnTo'), '/orders');
     assert.equal(context.sql.prepare('SELECT COUNT(*) count FROM auth_sessions').get().count, 1);
     const second = await consume(context, message);
     assert.equal(second.status, 302);
@@ -242,7 +250,15 @@ test('facade rejects malformed/cross-origin input and returnTo cannot escape the
     assert.equal(crossOrigin.status, 403);
     for (const value of ['https://evil.example', '//evil.example', 'javascript:alert(1)', '/%2f%2fevil.example']) {
       await requestMagicLink(context, `safe-${context.email.messages.length}@example.test`, value);
-      assert.equal(new URL(context.email.messages.at(-1).url).searchParams.get('callbackURL'), safeReturnTo(value));
+      const callback = new URL(
+        new URL(context.email.messages.at(-1).url).searchParams.get('callbackURL'),
+        origin,
+      );
+      assert.equal(callback.pathname, '/auth/email/continue');
+      assert.equal(
+        callback.searchParams.get('returnTo'),
+        safeEmailContinuationReturnTo(safeReturnTo(value)),
+      );
     }
   } finally { context.db.close(); }
 });

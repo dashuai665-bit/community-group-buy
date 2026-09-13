@@ -386,4 +386,18 @@ export class ProfileService {
       this.repositories.profiles.changePhoneStatement(actor.id, phone),
     ]);
   }
+  async completeOnboarding(
+    userId: string | null,
+    displayName: string,
+    phone: string,
+  ): Promise<void> {
+    const actor = await requireActiveUser(this.repositories, userId);
+    await this.repositories.batch([
+      this.repositories.profiles.completeOnboardingStatement(
+        actor.id,
+        displayName,
+        phone,
+      ),
+    ]);
+  }
 }

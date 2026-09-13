@@ -57,7 +57,7 @@ export function ProfileView() {
     try {
       await api('/api/me/profile/phone', { method: 'PUT', body: JSON.stringify({ phone }) });
       await load();
-      setMessage('電話已更新；若號碼有變更，需重新完成驗證。');
+      setMessage('電話已更新；手機目前僅供訂單聯絡使用。');
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : '更新失敗');
     } finally { setBusy(false); }

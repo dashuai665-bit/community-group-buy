@@ -248,6 +248,18 @@ export class UserProfileRepository extends RepositoryBase {
       userId,
     );
   }
+  completeOnboardingStatement(
+    userId: string,
+    displayName: string,
+    phone: string,
+  ) {
+    return this.statement(
+      "UPDATE user_profiles SET display_name = ?, phone = ?, phone_verified = 'false', updated_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+      displayName,
+      phone,
+      userId,
+    );
+  }
 }
 
 export class UserIdentityRepository extends RepositoryBase {
